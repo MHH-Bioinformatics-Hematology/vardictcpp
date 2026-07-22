@@ -31,8 +31,10 @@ struct Config {
     int vext = 2;             // -X  extension for MNV/complex-variant growth
     int indelsize = 50;       // -I  indel size / large-indel breakpoint search window
     int minMatch = 0;         // -M
+    int SVMINLEN = 1000;      // -L  minimum SV length to spell as <DUP>/<INV>/<DEL>
     static constexpr int EXTENSION = 5000;
     static constexpr int SVMAXLEN = 150000;
+    static constexpr int SVFLANK = 50;
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F
     bool doPileup = false;    // -p

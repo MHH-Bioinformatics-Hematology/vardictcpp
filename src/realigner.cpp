@@ -93,6 +93,23 @@ static std::string joinRef(Reference& ref, int from, int to) {
     for (int i = from; i <= to; ++i) if (ref.has(i)) s += ref.at(i);
     return s;
 }
+static std::string joinRefFor5Lgins(Reference& ref, int from, int to, const std::string& seq, const std::string& EXTRA) {
+    std::string sb;
+    for (int i = from; i <= to; ++i) {
+        if (to - i < (int)seq.size() - (int)EXTRA.size()) { char c = charAt(seq, to - i + (int)EXTRA.size()); if (c != (char)-1) sb += c; }
+        else if (ref.has(i)) sb += ref.at(i);
+    }
+    return sb;
+}
+static std::string joinRefFor3Lgins(Reference& ref, int from, int to, int shift5, const std::string& seq, const std::string& EXTRA) {
+    std::string sb;
+    for (int i = from; i <= to; ++i) {
+        if (i - from >= shift5 && i - from - shift5 < (int)seq.size() - (int)EXTRA.size()) {
+            char c = charAt(seq, i - from - shift5 + (int)EXTRA.size()); if (c != (char)-1) sb += c;
+        } else if (ref.has(i)) sb += ref.at(i);
+    }
+    return sb;
+}
 
 static Variation& getVariation(std::map<int, VarMap>& hash, int pos, const std::string& key) {
     return hash[pos][key];
@@ -921,7 +938,24 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
         if (seq.empty() || (int)seq.size() < 12) continue;
         BaseInsertion tpl = findbi(seq, p, ref, -1, vd.chrLen);
         int bi = tpl.bi; std::string ins = tpl.ins;
-        if (bi == 0) continue; // findMatch/DUP (SV-cluster) path gated
+        if (bi == 0) {   // findbi failed: seed findMatch DUP path (markDUPSV / partialPipeline gated)
+            if (islowcomplexseq(seq)) continue;
+            Match match = findMatch(seq, ref, p, -1, Reference::SEED_1, 1);
+            bi = match.bp; std::string EXTRA = match.extra;
+            if (!(bi != 0 && bi - p > 15 && bi - p < Config::SVMAXLEN)) continue;
+            if (bi - p > cfg.SVMINLEN + 2 * Config::SVFLANK) {
+                ins = joinRef(ref, p, p + Config::SVFLANK - 1);
+                ins += "<dup" + std::to_string(bi - p - 2 * Config::SVFLANK + 1) + ">";
+                ins += joinRefFor5Lgins(ref, bi - Config::SVFLANK + 1, bi, seq, EXTRA);
+            } else {
+                ins = joinRefFor5Lgins(ref, p, bi, seq, EXTRA);
+            }
+            ins += EXTRA;
+            if (!vd.refCoverage.count(p - 1) || (vd.refCoverage.count(bi) && vd.refCoverage[p - 1] < vd.refCoverage[bi])) {
+                vd.refCoverage[p - 1] = vd.refCoverage.count(bi) ? vd.refCoverage[bi] : sc5v.varsCount;
+            } else if (sc5v.varsCount > vd.refCoverage[p - 1]) vd.refCoverage[p - 1] += sc5v.varsCount;
+            bi = p - 1;
+        }
         Variation& iref = vd.insertionVariants[bi]["+" + ins];
         iref.pstd = true; iref.qstd = true;
         adjCnt(iref, sc5v);
@@ -950,7 +984,26 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
         if (seq.empty() || (int)seq.size() < 12) continue;
         BaseInsertion tpl = findbi(seq, p, ref, 1, vd.chrLen);
         int bi = tpl.bi; std::string ins = tpl.ins;
-        if (bi == 0) continue;
+        if (bi == 0) {
+            if (islowcomplexseq(seq)) continue;
+            Match match = findMatch(seq, ref, p, 1, Reference::SEED_1, 1);
+            bi = match.bp; std::string EXTRA = match.extra;
+            if (!(bi != 0 && p - bi > 15 && p - bi < Config::SVMAXLEN)) continue;
+            int shift5 = 0;
+            while (ref.has(p - 1) && ref.has(bi - 1) && ref.at(p - 1) == ref.at(bi - 1)) { p--; bi--; shift5++; }
+            if (p - bi > cfg.SVMINLEN + 2 * Config::SVFLANK) {
+                ins = joinRefFor3Lgins(ref, bi, bi + Config::SVFLANK - 1, shift5, seq, EXTRA);
+                ins += "<dup" + std::to_string(p - bi - 2 * Config::SVFLANK) + ">";
+                ins += joinRef(ref, p - Config::SVFLANK, p - 1);
+            } else {
+                ins = joinRefFor3Lgins(ref, bi, p - 1, shift5, seq, EXTRA);
+            }
+            ins += EXTRA;
+            bi = bi - 1;
+            if (!vd.refCoverage.count(bi) || (vd.refCoverage.count(p) && vd.refCoverage[bi] < vd.refCoverage[p])) {
+                vd.refCoverage[bi] = vd.refCoverage.count(p) ? vd.refCoverage[p] : sc3v.varsCount;
+            } else if (sc3v.varsCount > vd.refCoverage[bi]) vd.refCoverage[bi] += sc3v.varsCount;
+        }
         Variation& iref = vd.insertionVariants[bi]["+" + ins];
         iref.pstd = true; iref.qstd = true;
         Variation* lref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
