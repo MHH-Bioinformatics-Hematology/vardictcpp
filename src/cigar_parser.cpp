@@ -40,7 +40,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         const bam1_core_t& c = b->core;
         if (c.flag & BAM_FUNMAP) continue;
         if (cfg_.samFilterFlag != 0 && (c.flag & cfg_.samFilterFlag)) continue;
-        if ((int)c.qual < cfg_.minMapQ) continue;
+        if ((double)c.qual < cfg_.mapqMin) continue;
         if (c.n_cigar == 0 || c.l_qseq == 0) continue;
 
         bool reverse = (c.flag & BAM_FREVERSE) != 0;
@@ -90,7 +90,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     v.meanQuality += q;
                     v.meanMappingQuality += mapq;
                     v.numberOfMismatches += nm;
-                    if (q >= Config::GOODQUALITY) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
+                    if (q >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
                     if (v.varsCount > 1 && v.pp != 0 && v.pp != rp) v.pstd = true;
                     if (v.varsCount > 1 && v.pq != 0 && v.pq != (double)q) v.qstd = true;
                     v.pp = rp; v.pq = q;

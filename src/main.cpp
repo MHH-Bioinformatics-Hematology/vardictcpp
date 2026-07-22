@@ -84,8 +84,8 @@ int main(int argc, char** argv) {
         case 'g': c.colGene = std::atoi(optarg); break;
         case 'f': c.freq = std::atof(optarg); break;
         case 'r': c.minReads = std::atoi(optarg); break;
-        case 'q': c.minBaseQ = std::atoi(optarg); break;
-        case 'O': c.minMapQ = std::atoi(optarg); break;
+        case 'q': c.goodq = std::atof(optarg); break;
+        case 'O': c.mapqMin = std::atof(optarg); break;
         case 'x': c.numberNucleotideToExtend = std::atoi(optarg); break;
         case 'F': c.samFilterFlag = (int)std::strtol(optarg, nullptr, 0); break;
         case 'z': c.zeroBased = (optarg ? std::atoi(optarg) != 0 : true); zeroBasedSet = true; break;

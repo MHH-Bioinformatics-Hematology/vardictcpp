@@ -15,6 +15,32 @@ static int strandBias(int fwd, int rev, int minBiasReads) {
     return ok ? 2 : 1;
 }
 
+// Port of variations/Variant.java isGoodVar for the simple single-sample path. Reference-allele
+// stats (hicnt, mean mapping quality) are passed in from the position's ref accumulator. MSI columns
+// default to 0 until findMSI is ported, so the two MSI gates are inactive (matches a no-MSI position).
+static bool isGoodVar(const Config& c, const Variant& v, int refHicnt, double refMeanMapq) {
+    if (v.refallele.empty()) return false;
+    if (v.frequency < c.freq || v.hicnt < c.minReads ||
+        v.pmean < c.readPosFilter || v.qmean < c.goodq) {
+        return false;
+    }
+    if (refHicnt > c.minReads && v.frequency < 0.25) {
+        double d = v.mapq + (double)v.refallele.size() + (double)v.varallele.size();
+        double f = (1 + d) / (refMeanMapq + 1);
+        if ((d - 2 < 5 && refMeanMapq > 20) || f < 0.25) return false;
+    }
+    // (Deletion/splice gate omitted: splice set not tracked yet.)
+    if (v.qratio < c.qratio) return false;
+    if (v.frequency > 0.30) return true;
+    if (v.mapq < c.mapqMin) return false;
+    if (v.msi >= 15 && v.frequency <= c.monomerMsiFrequency && v.msint == 1) return false;
+    if (v.msi >= 12 && v.frequency <= c.nonMonomerMsiFrequency && v.msint > 1) return false;
+    if (v.bias == "2;1" && v.frequency < 0.20) {
+        if (v.vartype == "SNV" || (v.refallele.size() < 3 && v.varallele.size() < 3)) return false;
+    }
+    return true;
+}
+
 static std::string classifyType(const std::string& ref, const std::string& alt) {
     if (alt.size() == 1 && ref.size() == 1) return "SNV";
     if (!alt.empty() && alt[0] == '+') return "Insertion";
@@ -39,6 +65,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         const Variation* refVar = nullptr;
         auto rit = alleleMap.find(std::string(1, refBase));
         if (rit != alleleMap.end()) refVar = &rit->second;
+        int refHicnt = refVar ? refVar->highQualityReadsCount : 0;
+        double refMeanMapq = (refVar && refVar->varsCount) ? refVar->meanMappingQuality / refVar->varsCount : 0;
 
         // High-quality coverage = sum of hi-qual reads across alleles at this position.
         int hicov = 0;
@@ -98,6 +126,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             for (int i = 5; i >= 1; --i) var.leftseq += ref.at(position - i);
             for (int i = 1; i <= 5; ++i) var.rightseq += ref.at(position + 1 + i - 1);
 
+            if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
             result.push_back(std::move(var));
         }
 
@@ -124,8 +153,14 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.vartype = "Insertion";
                 var.genotype = var.refallele + "/" + var.varallele;
                 var.duprate = vd.duprate();
+                var.qratio = v.lowQualityReadsCount > 0
+                           ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
+                           : (double)v.highQualityReadsCount;
+                var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads))
+                         + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads));
                 for (int i = 5; i >= 1; --i) var.leftseq += ref.at(position - i);
                 for (int i = 1; i <= 5; ++i) var.rightseq += ref.at(position + i);
+                if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
                 result.push_back(std::move(var));
             }
         }

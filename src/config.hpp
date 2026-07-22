@@ -20,11 +20,14 @@ struct Config {
     bool zeroBased = false;   // -z (BED default true for 4-col custom; set by caller)
 
     double freq = 0.01;       // -f  (0 keeps every position with >=1 alt read)
-    int minReads = 2;         // -r  minimum alt reads to call
+    int minReads = 2;         // -r  minimum alt reads to call (conf.minr)
     int minBiasReads = 2;     // -B  minimum reads per strand for the strand-bias flag
-    int minMapQ = 0;          // -O  minimum mapping quality
-    int minBaseQ = 25;        // -q  phred (VarDict GOODQUALITY=23 default is 25 via -q)
-    double qratio = 1.5;      // -o
+    double mapqMin = 0;       // -O  minimum mapping quality (read filter AND isGoodVar threshold)
+    double goodq = 22.5;      // -q  base-quality boundary for hi/lo-quality counting + isGoodVar
+    int readPosFilter = 5;    // -P  minimum mean read position (isGoodVar)
+    double qratio = 1.5;      // -o  minimum hi/lo-quality ratio (isGoodVar)
+    double monomerMsiFrequency = 0.25;    // --mfreq
+    double nonMonomerMsiFrequency = 0.1;  // --nmfreq
     int minMatch = 0;         // -M
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F
@@ -33,8 +36,6 @@ struct Config {
     int threads = 1;          // -th   (region-parallel; core is per-region single-threaded)
     bool printHeader = false; // -h
     int chunkSize = 0;        // --chunk : split long regions into windows (bounds memory)
-
-    static constexpr int GOODQUALITY = 23; // VarDict Configuration.LOWQUAL boundary is 10; hi-qual base >= this
 };
 
 } // namespace vardict
