@@ -655,4 +655,114 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
     }
 }
 
+// ---- realignlgins30 (large insertions from paired 5'/3' soft-clips) ------------------------------
+
+struct Match35 { int b5; int b3; int score; };
+static Match35 find35match(const std::string& seq5, const std::string& seq3) {
+    const int longMismatch = 2;
+    int maxLen = 0, b3 = 0, b5 = 0;
+    for (int i = 0; i < (int)seq5.size() - 8; ++i) {
+        for (int j = 1; j < (int)seq3.size() - 8; ++j) {
+            int nm = 0, n = 0;
+            while (n + j <= (int)seq3.size() && i + n <= (int)seq5.size()) {
+                if (substr(seq3, -j - n, 1) != substr(seq5, i + n, 1)) nm++;
+                if (nm > longMismatch) break;
+                n++;
+            }
+            if (n - nm > maxLen && n - nm > 8 && nm / (double)n < 0.1 &&
+                (n + j >= (int)seq3.size() || i + n >= (int)seq5.size())) {
+                return { i, j, n - nm };
+            }
+        }
+    }
+    return { b5, b3, maxLen };
+}
+
+void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+    auto& NIV = vd.nonInsertionVariants;
+    const int EXT = Config::EXTENSION;
+    auto collect = [&](std::map<int, Sclip>& clips) {
+        std::vector<std::pair<int, Sclip*>> v;
+        for (auto& [p, sc] : clips)
+            if (p >= region.start - EXT && p <= region.end + EXT) v.push_back({p, &sc});
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) {
+            if (a.second->varsCount != b.second->varsCount) return a.second->varsCount > b.second->varsCount;
+            return a.first < b.first;
+        });
+        return v;
+    };
+    auto tmp5 = collect(vd.softClips5End);
+    auto tmp3 = collect(vd.softClips3End);
+    for (auto& [p5, sc5vp] : tmp5) {
+        Sclip& sc5v = *sc5vp;
+        int cnt5 = sc5v.varsCount;
+        if (sc5v.used) continue;
+        for (auto& [p3, sc3vp] : tmp3) {
+            Sclip& sc3v = *sc3vp;
+            int cnt3 = sc3v.varsCount;
+            if (sc5v.used) break;
+            if (sc3v.used) continue;
+            if (p5 - p3 > maxReadLength * 2.5) continue;
+            if (p3 - p5 > maxReadLength - 10) continue;
+            std::string seq5 = findconseq(sc5v), seq3 = findconseq(sc3v);
+            if ((int)seq5.size() <= 10 || (int)seq3.size() <= 10) continue;
+            if (!(cnt5 / (double)cnt3 >= 0.08 && cnt5 / (double)cnt3 <= 12)) continue;
+            Match35 m = find35match(seq5, seq3);
+            int bp5 = m.b5, bp3 = m.b3, score = m.score;
+            if (score == 0) continue;
+            int smscore = score / 2;
+            std::string ins = (bp3 + smscore > 1) ? substr(seq3, 0, -(bp3 + smscore) + 1) : seq3;
+            if (bp5 + smscore > 0) ins += reverseStr(substr(seq5, 0, bp5 + smscore));
+            if (islowcomplexseq(ins)) continue;
+            int bi = 0; bool isIns = false, isDel = false; std::string key;
+            if (p5 > p3) {
+                if ((int)seq3.size() > (int)ins.size() &&
+                    !ismatch(substr(seq3, (int)ins.size()), joinRef(ref, p5, p5 + (int)seq3.size() - (int)ins.size() + 2), 1)) continue;
+                if ((int)seq5.size() > (int)ins.size() &&
+                    !ismatch(substr(seq5, (int)ins.size()), joinRef(ref, p3 - ((int)seq5.size() - (int)ins.size()) - 2, p3 - 1), -1)) continue;
+                std::string tmp = joinRef(ref, p3, p5 - 1);
+                if ((int)tmp.size() > (int)ins.size()) { key = std::to_string(p3 - p5) + "^" + ins; bi = p3; isDel = true; }
+                else if ((int)tmp.size() < (int)ins.size()) {
+                    ins = substr(ins, 0, (int)ins.size() - (int)tmp.size()) + "&" + substr(ins, p3 - p5);
+                    key = "+" + ins; bi = p3 - 1; isIns = true;
+                } else { key = "-" + std::to_string((int)ins.size()) + "^" + ins; bi = p3; isDel = true; }
+            } else {
+                if ((int)seq3.size() > (int)ins.size() &&
+                    !ismatch(substr(seq3, (int)ins.size()), joinRef(ref, p5, p5 + (int)seq3.size() - (int)ins.size() + 2), 1)) continue;
+                if ((int)seq5.size() > (int)ins.size() &&
+                    !ismatch(substr(seq5, (int)ins.size()), joinRef(ref, p3 - ((int)seq5.size() - (int)ins.size()) - 2, p3 - 1), -1)) continue;
+                std::string tmp;
+                if ((int)ins.size() <= p3 - p5) {
+                    int rpt = 2, tnr = 3;
+                    while (((p3 - p5 + (int)ins.size()) / (double)tnr) / (double)ins.size() > 1) {
+                        if ((p3 - p5 + (int)ins.size()) % tnr == 0) rpt++;
+                        tnr++;
+                    }
+                    tmp += joinRef(ref, p5, (int)(p5 + (p3 - p5 + (int)ins.size()) / (double)rpt - (int)ins.size()));
+                    ins = "+" + tmp + ins;
+                } else {
+                    tmp += joinRef(ref, p5, p3 - 1);
+                    if (((int)ins.size() - (int)tmp.size()) % 2 == 0) {
+                        int tex = ((int)ins.size() - (int)tmp.size()) / 2;
+                        ins = (tmp + substr(ins, 0, tex)) == substr(ins, tex) ? ("+" + substr(ins, tex)) : "+" + tmp + ins;
+                    } else ins = "+" + tmp + ins;
+                }
+                key = ins; bi = p5 - 1; isIns = true;
+            }
+            Variation& vref = isIns ? vd.insertionVariants[bi][key] : NIV[bi][key];
+            sc3v.used = true; sc5v.used = true;
+            vref.pstd = true; vref.qstd = true;
+            vd.refCoverage[bi] += sc5v.varsCount;
+            if (isIns) {
+                Variation* mvref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
+                adjCnt(vref, sc3v, mvref); adjCnt(vref, sc5v);
+            } else if (isDel) {
+                adjCnt(vref, sc3v, ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr);
+                adjCnt(vref, sc5v);
+            } else { adjCnt(vref, sc3v); adjCnt(vref, sc5v); }
+            break;
+        }
+    }
+}
+
 } // namespace vardict

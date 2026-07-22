@@ -18,5 +18,6 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
 
 // Realign large deletions inferred from soft-clip consensus breakpoints (findbp path).
 void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
 } // namespace vardict

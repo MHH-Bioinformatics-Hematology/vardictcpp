@@ -145,6 +145,9 @@ int main(int argc, char** argv) {
         realigndel(vd, ref, c, region, vd.maxReadLength);
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength);
+        // realignlgins30: ported (see realigner.cpp) but not yet enabled — without VarDict's adaptor
+        // filtering in findconseq and the inner realignins/realigndel re-calls it can synthesize a
+        // spurious large insertion from adapter-contaminated soft-clip pairs. Enable once those land.
         auto variants = callVariants(c, region, vd, ref);
         std::string buf;
         for (const auto& v : variants) appendVariant(buf, c, region, v);
