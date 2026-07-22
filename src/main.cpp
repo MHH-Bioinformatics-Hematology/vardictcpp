@@ -139,6 +139,9 @@ int main(int argc, char** argv) {
         ref.load(region.chr, region.start, region.end, 20 + c.numberNucleotideToExtend);
         VariationData vd;
         CigarParser(c, ref).process(region, vd);
+        // Realignment order mirrors VariationRealigner: deletions, then insertions, then MNP merge.
+        realigndel(vd, ref, c, region, vd.maxReadLength);
+        realignins(vd, ref, c, region, vd.maxReadLength);
         adjustMNP(vd, ref, c, region);
         auto variants = callVariants(c, region, vd, ref);
         std::string buf;

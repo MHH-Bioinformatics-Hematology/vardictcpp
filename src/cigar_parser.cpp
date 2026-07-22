@@ -1,4 +1,5 @@
 #include "cigar_parser.hpp"
+#include "util.hpp"
 #include <htslib/sam.h>
 #include <htslib/hts.h>
 #include <cstring>
@@ -17,6 +18,20 @@ static inline Variation& getVariationFromSeq(Sclip& sc, int idx, char ch) {
     auto& slot = sc.seq[idx][ch];
     if (!slot) slot = std::make_shared<Variation>();
     return *slot;
+}
+
+// VariationRealigner.adjInsPos: left-normalize an insertion anchor. Shifts `bi` left while the
+// reference base equals the correspondingly-rotated insertion base, rotating `ins` accordingly, so
+// alignment-ambiguous insertions in repeats collapse to one canonical (position, sequence).
+static void adjInsPos(int& bi, std::string& ins, Reference& ref) {
+    int n = 1;
+    int len = (int)ins.size();
+    while (ref.has(bi) && ref.at(bi) == ins[ins.size() - n]) {
+        n++;
+        if (n > len) n = 1;
+        bi--;
+    }
+    if (n > 1) ins = substr(ins, 1 - n) + substr(ins, 0, 1 - n);
 }
 
 // VariationUtils.addCnt: accumulate one observation into a Variation (no pstd/qstd; those are set
@@ -179,11 +194,14 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             }
             case BAM_CINS: {
                 int p = rpos - 1; // insertion anchored to preceding reference base (VarDict convention)
-                if (p >= rlo && p <= rhi) {
-                    std::string sig = "+";
-                    double qsum = 0;
-                    for (int i = 0; i < len; ++i) { sig += baseChar(b, qpos + i); qsum += qual[qpos + i]; }
+                std::string ins;
+                double qsum = 0;
+                for (int i = 0; i < len; ++i) { ins += baseChar(b, qpos + i); qsum += qual[qpos + i]; }
+                adjInsPos(p, ins, ref_);   // left-normalize insertion anchor in repeats
+                std::string sig = "+" + ins;
+                if (p >= rlo && p <= rhi && ins.find('N') == std::string::npos) {
                     int tp = foldPos(rpe);
+                    out.positionToInsertionCount[p][sig]++;
                     Variation& v = out.insertionVariants[p][sig];
                     v.varsCount++;
                     v.incDir(reverse);
@@ -202,6 +220,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     std::string dels;
                     for (int i = 0; i < len; ++i) dels += ref_.at(rpos + i);
                     std::string sig = "-" + std::to_string(len);
+                    out.positionToDeletionCount[p][sig]++;
                     int q = qpos < c.l_qseq ? qual[qpos] : 30;
                     int tp = foldPos(rpe);
                     Variation& v = out.nonInsertionVariants[p][sig];

@@ -14,6 +14,8 @@ struct VariationData {
     std::map<int, VarMap> insertionVariants;    // position -> "+SEQ" -> Variation
     std::map<int, int>    refCoverage;          // position -> total coverage
     std::map<int, std::map<std::string,int>> mnp; // position -> MNV description -> count
+    std::map<int, std::map<std::string,int>> positionToInsertionCount; // pos -> "+SEQ" -> count
+    std::map<int, std::map<std::string,int>> positionToDeletionCount;  // pos -> "-N" -> count
     std::map<int, Sclip> softClips5End;         // 5' soft-clip consensus per position
     std::map<int, Sclip> softClips3End;         // 3' soft-clip consensus per position
     int  maxReadLength = 0;

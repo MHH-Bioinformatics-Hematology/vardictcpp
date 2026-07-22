@@ -11,4 +11,9 @@ namespace vardict {
 // counts move into the MNP, the partial variants are removed, and coverage is adjusted.
 void adjustMNP(VariationData& vd, Reference& ref, const Config& cfg, const Region& region);
 
+// Realign insertions/deletions: attribute nearby mismatch SNVs and soft-clip consensus to the
+// indel (removing the spurious SNVs), and merge duplicate representations (VariationRealigner).
+void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+
 } // namespace vardict
