@@ -12,6 +12,26 @@ static inline char baseChar(const bam1_t* b, int qpos) {
     return code[bam_seqi(bam_get_seq(b), qpos)];
 }
 
+// VariationUtils.getVariationFromSeq: get-or-create the Variation for a soft-clip consensus base.
+static inline Variation& getVariationFromSeq(Sclip& sc, int idx, char ch) {
+    auto& slot = sc.seq[idx][ch];
+    if (!slot) slot = std::make_shared<Variation>();
+    return *slot;
+}
+
+// VariationUtils.addCnt: accumulate one observation into a Variation (no pstd/qstd; those are set
+// only in the matching-part increment).
+static inline void addCnt(Variation& v, bool dir, int readPosition, double baseQuality,
+                          int mappingQuality, double nm, double goodq) {
+    v.varsCount++;
+    v.incDir(dir);
+    v.meanPosition += readPosition;
+    v.meanQuality += baseQuality;
+    v.meanMappingQuality += mappingQuality;
+    v.numberOfMismatches += nm;
+    if (baseQuality >= goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
+}
+
 bool CigarParser::process(const Region& region, VariationData& out) {
     samFile* fp = sam_open(cfg_.bam.c_str(), "r");
     if (!fp) throw std::runtime_error("cannot open BAM " + cfg_.bam);
@@ -201,9 +221,83 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             case BAM_CREF_SKIP:
                 rpos += len; // N (intron)
                 break;
-            case BAM_CSOFT_CLIP:
-                qpos += len; // soft clip: consumes query only (consensus/realign not ported yet)
+            case BAM_CSOFT_CLIP: {
+                // Faithful port of processSoftClip's mis-softclip re-matching + consensus storage
+                // (chimeric SEED/SA detection is omitted; conf.chimeric defaults off and the seed
+                // map is not built). The re-matching converts soft-clipped bases that actually match
+                // the reference into reference-allele counts + coverage, which affects depth/AF near
+                // clips; the remaining high-quality bases are stored as a soft-clip consensus for
+                // realignment.
+                bool isFivePrime = (k == 0);
+                bool isThreePrime = (k == c.n_cigar - 1);
+                if (isFivePrime) {
+                    int st = rpos;   // aligned start (VarDict 'start' == position)
+                    int el = len;    // remaining soft-clip length
+                    while (el - 1 >= 0 && st - 1 > 0 && ref_.has(st - 1) &&
+                           baseChar(b, el - 1) == ref_.at(st - 1) && qual[el - 1] > 10) {
+                        Variation& v = out.nonInsertionVariants[st - 1][std::string(1, ref_.at(st - 1))];
+                        addCnt(v, reverse, el, qual[el - 1], mapq, nm, cfg_.goodq);
+                        if (st - 1 >= rlo && st - 1 <= rhi) out.refCoverage[st - 1]++;
+                        st--; el--;
+                    }
+                    // Store high-quality remaining soft-clip as 5' consensus.
+                    if (el > 0) {
+                        int lowq = 0, hq = 0, sumq = 0;
+                        for (int si = el - 1; si >= 0; --si) {
+                            if (baseChar(b, si) == 'N') break;
+                            int bq = qual[si];
+                            if (bq <= 12) lowq++;
+                            if (lowq > 1) break;
+                            sumq += bq; hq++;
+                        }
+                        if (hq >= 1 && hq > lowq && st >= rlo && st <= rhi) {
+                            Sclip& sc = out.softClips5End[st];
+                            for (int si = el - 1; el - si <= hq; --si) {
+                                char ch = baseChar(b, si);
+                                int idx = el - 1 - si;
+                                sc.nt[idx][ch]++;
+                                addCnt(getVariationFromSeq(sc, idx, ch),
+                                       reverse, si - (el - hq), qual[si], mapq, nm, cfg_.goodq);
+                            }
+                            addCnt(sc, reverse, len, (double)sumq / hq, mapq, nm, cfg_.goodq);
+                        }
+                    }
+                } else if (isThreePrime) {
+                    int st = rpos;    // current reference position
+                    int qp = qpos;    // current query position
+                    int el = len;
+                    int rpeLocal = rpe;
+                    while (qp < c.l_qseq && ref_.has(st) &&
+                           baseChar(b, qp) == ref_.at(st) && qual[qp] > 10) {
+                        Variation& v = out.nonInsertionVariants[st][std::string(1, ref_.at(st))];
+                        addCnt(v, reverse, rlen - rpeLocal, qual[qp], mapq, nm, cfg_.goodq);
+                        if (st >= rlo && st <= rhi) out.refCoverage[st]++;
+                        qp++; st++; el--; rpeLocal++;
+                    }
+                    if (c.l_qseq - qp > 0) {
+                        int lowq = 0, hq = 0, sumq = 0;
+                        for (int si = 0; si < el; ++si) {
+                            if (baseChar(b, qp + si) == 'N') break;
+                            int bq = qual[qp + si];
+                            if (bq <= 12) lowq++;
+                            if (lowq > 1) break;
+                            sumq += bq; hq++;
+                        }
+                        if (hq >= 1 && hq > lowq && st >= rlo && st <= rhi) {
+                            Sclip& sc = out.softClips3End[st];
+                            for (int si = 0; si < hq; ++si) {
+                                char ch = baseChar(b, qp + si);
+                                sc.nt[si][ch]++;
+                                addCnt(getVariationFromSeq(sc, si, ch),
+                                       reverse, hq - si, qual[qp + si], mapq, nm, cfg_.goodq);
+                            }
+                            addCnt(sc, reverse, len, (double)sumq / hq, mapq, nm, cfg_.goodq);
+                        }
+                    }
+                }
+                qpos += len;
                 break;
+            }
             case BAM_CHARD_CLIP:
             case BAM_CPAD:
             default:

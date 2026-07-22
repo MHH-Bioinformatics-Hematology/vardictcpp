@@ -21,6 +21,8 @@ public:
         if (i < 0 || i >= (int)seq_.size()) return 'N';
         return seq_[i];
     }
+    // Whether position p is within the loaded window (mirrors ref.get(p) != null).
+    bool has(int p) const { int i = p - loadedStart_; return i >= 0 && i < (int)seq_.size(); }
     int loadedStart() const { return loadedStart_; }
     int loadedEnd() const { return loadedStart_ + (int)seq_.size() - 1; }
 
