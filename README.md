@@ -91,27 +91,29 @@ insertion left-normalization (`adjInsPos`). These attribute nearby mismatch SNVs
 consensus reads to an indel and merge duplicate representations. They run in VarDict's order
 (`realigndel` → `realignins` → `adjustMNP`) and are functioning + non-regressing.
 
-**`realignlgdel`** (large deletions from soft-clip breakpoints via `findbp`) is ported and **enabled**:
-each 5'/3' soft-clip consensus is slid against the reference to find a large-deletion breakpoint, the
-`-dellen` variation is created, the soft-clip reads are reassigned into it, and the intervening SNVs
-in the deleted span are removed (`rmCnt`). **`realignlgins30`** + `find35match` (large insertions from
-paired 5'/3' soft-clips: plain insertion, tandem-dup, complex del/MNP) are ported but **disabled** —
-without VarDict's adaptor filtering and the inner realign re-calls a partial run can synthesize a
-spurious adapter insertion.
+**The complete soft-clip realignment engine is ported and enabled**, in VarDict's order:
+`adjustMNP` → `realigndel` → `realignins` → `realignlgdel` → `realignlgins30` → `realignlgins`.
+This includes `findbp`, `findbi`, `find35match`, the reference **k-mer seed index** + `findMatch`,
+`findconseq` (with the `B_A7`/`B_T7` poly-A/T guard), and the soft-clip-consensus / mismatch
+reassignment that removes indel-explained SNVs. Reference is loaded with VarDict's ±1200 window.
 
-**Not yet ported (needed for full byte-for-byte parity):**
+**Not yet ported — the discordant/chimeric SV subsystem (the last frontier):**
 
-- To enable `realignlgins30`: adaptor filtering in `findconseq`, the inner `realignins`/`realigndel`
-  re-calls on the created variation, and the seed-based single-clip `findMatch` fallback.
-- **`realignlgins`** (duplications) + **`StructuralVariantsProcessor`** (`findDEL`/`findINV`/`findDUP`/
-  `findsv`, `findMatch`) + SV-cluster detection in `CigarParser` (`prepareSVStructuresForAnalysis`,
-  discordant/split-read clustering from the `SA` tag). This is the deepest interlocking subsystem and
-  is what removes the last panel false-positives (one-strand homopolymer SNVs).
-- Faithful **distributed coverage** at indel/MNP-dense positions (the `TCC>ACG` Depth 46 vs 35).
-- **Somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + Brent `zeroin`).
+Diagnosed precisely: the remaining panel false-positives are **chimeric/split reads** — e.g. at
+`chr3:47538004` the reads are `64S36M112S` (a 36 bp mapped island in a sea of soft-clip) with the
+mate unmapped. VarDict clusters these into structural variants and suppresses the spurious SNV; no
+soft-clip realignment path touches them. Removing them needs:
 
-Ported & enabled: CIGAR parse → MNV/MNP → soft-clip → small-indel realign → **large-deletion realign**
-→ call/format. Disabled/remaining: large-insertion (lgins30/lgins) + the discordant-pair SV subsystem.
+- **Chimeric-read detection** (`isReadChimericWithSA`, `SA`-tag / seed) in `CigarParser`.
+- **Discordant/split-read SV clustering** (`prepareSVStructuresForAnalysis` → `SVStructures`).
+- **`StructuralVariantsProcessor`** (`findDEL`/`findINV`/`findDUP`/`findsv`) + `markSV`/`markDUPSV`.
+
+Also remaining: faithful **distributed coverage** at indel/MNP-dense positions (the `TCC>ACG`
+Depth 46 vs 35); **somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + `zeroin`).
+
+Ported & enabled: CIGAR parse → MNV/MNP → soft-clip → **full small + large indel realignment** →
+call/format. Remaining: the discordant/chimeric SV subsystem, distributed coverage, somatic/amplicon,
+fisher.
 
 ## License
 
