@@ -97,19 +97,21 @@ This includes `findbp`, `findbi`, `find35match`, the reference **k-mer seed inde
 `findconseq` (with the `B_A7`/`B_T7` poly-A/T guard), and the soft-clip-consensus / mismatch
 reassignment that removes indel-explained SNVs. Reference is loaded with VarDict's ±1200 window.
 
-**Not yet ported — the discordant/chimeric SV subsystem (the last frontier):**
+**Not yet ported — `CigarModifier` (the precise cause of the remaining false-positives):**
 
-Diagnosed precisely: the remaining panel false-positives are **chimeric/split reads** — e.g. at
-`chr3:47538004` the reads are `64S36M112S` (a 36 bp mapped island in a sea of soft-clip) with the
-mate unmapped. VarDict clusters these into structural variants and suppresses the spurious SNV; no
-soft-clip realignment path touches them. Removing them needs:
+Diagnosed to ground truth: the remaining panel FPs are reads whose CIGAR VarDict **rewrites before
+counting** and this port does not. E.g. at `chr3:47538004` the reads are `64S36M112S` (a 36 bp mapped
+island, mate unmapped) in a **poly-T homopolymer**; the 36 M has a single G>C. `modules/CigarModifier`
+(787 lines: leading/trailing D/I normalization, chimeric-seed clip removal, `captureMisSoftlyMS`/
+`captureMisSoftly3Mismatches`, `combineDigSDigM`/`combineBeginDigM`, and the indel-collapse loop)
+reshapes such reads so they never produce the SNV. VarDict pileup counts **nothing** there; this port
+counts `G>C 29/29`. `CigarModifier` runs on *every* read at the top of `parseCigar`, so it must be
+ported carefully (a defect changes all counting, not just these rows) — it is deliberately left for a
+dedicated pass rather than risking the verified pipeline.
 
-- **Chimeric-read detection** (`isReadChimericWithSA`, `SA`-tag / seed) in `CigarParser`.
-- **Discordant/split-read SV clustering** (`prepareSVStructuresForAnalysis` → `SVStructures`).
-- **`StructuralVariantsProcessor`** (`findDEL`/`findINV`/`findDUP`/`findsv`) + `markSV`/`markDUPSV`.
-
-Also remaining: faithful **distributed coverage** at indel/MNP-dense positions (the `TCC>ACG`
-Depth 46 vs 35); **somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + `zeroin`).
+Also remaining: the **discordant/chimeric SV subsystem** (`StructuralVariantsProcessor` +
+`SVStructures` clustering) for SV *output*; faithful **distributed coverage** at indel/MNP-dense
+positions (the `TCC>ACG` Depth 46 vs 35); **somatic** (paired) and **amplicon** modes; `--fisher`.
 
 Ported & enabled: CIGAR parse → MNV/MNP → soft-clip → **full small + large indel realignment** →
 call/format. Remaining: the discordant/chimeric SV subsystem, distributed coverage, somatic/amplicon,
