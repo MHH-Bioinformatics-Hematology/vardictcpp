@@ -24,6 +24,7 @@ add_executable(vardictcpp
   src/main.cpp
   src/reference.cpp
   src/cigar_parser.cpp
+  src/cigar_modifier.cpp
   src/tovars.cpp
   src/realigner.cpp
   src/printer.cpp

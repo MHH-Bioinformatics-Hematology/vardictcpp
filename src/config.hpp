@@ -37,6 +37,9 @@ struct Config {
     static constexpr int SVFLANK = 50;
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F
+    bool performLocalRealignment = true; // -k (CigarModifier + realignment)
+    bool chimeric = false;    // --chimeric
+    static constexpr int LOWQUAL = 10;
     bool doPileup = false;    // -p
     bool removeDuplicates = false; // -t
     int threads = 1;          // -th   (region-parallel; core is per-region single-threaded)

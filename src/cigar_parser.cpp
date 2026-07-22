@@ -1,5 +1,6 @@
 #include "cigar_parser.hpp"
 #include "util.hpp"
+#include "cigar_modifier.hpp"
 #include <htslib/sam.h>
 #include <htslib/hts.h>
 #include <cstring>
@@ -109,31 +110,37 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             if (++dupKeys[key] > 1) { out.dupReads++; continue; }
         }
 
-        const uint32_t* cig = bam_get_cigar(b);
-        const uint8_t* qual = bam_get_qual(b);
+        // Build read sequence + qualities + CIGAR, then reshape the CIGAR (CigarModifier) before counting.
+        static const char CODE[] = "=ACMGRSVTWYHKDBN";
+        const uint8_t* rawseq = bam_get_seq(b);
+        const uint8_t* rawqual = bam_get_qual(b);
+        std::string bseq(c.l_qseq, 'N');
+        std::vector<int> bqual(c.l_qseq);
+        for (int j = 0; j < c.l_qseq; ++j) { bseq[j] = CODE[bam_seqi(rawseq, j)]; bqual[j] = rawqual[j]; }
+        const uint32_t* rawcig = bam_get_cigar(b);
+        static const char OPS[] = "MIDNSHP=X";
+        Cig cigv;
+        for (uint32_t k = 0; k < c.n_cigar; ++k) cigv.push_back({(int)bam_cigar_oplen(rawcig[k]), OPS[bam_cigar_op(rawcig[k])]});
         int rpos = c.pos + 1;   // 1-based reference position of current op
+        if (cfg_.performLocalRealignment) modifyCigar(rpos, cigv, bseq, bqual, ref_, out.maxReadLength, cfg_);
         int qpos = 0;           // 0-based query offset (includes soft-clip)
 
         // VarDict read-position convention: position within the aligned read (M+I only, excluding
         // soft-clip), folded to the distance from the nearest read end. Precompute the aligned length.
         int rlen = 0;           // readLengthIncludeMatchingAndInsertions
-        for (uint32_t k = 0; k < c.n_cigar; ++k) {
-            int op = bam_cigar_op(cig[k]);
-            if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF || op == BAM_CINS)
-                rlen += bam_cigar_oplen(cig[k]);
-        }
+        for (auto& e : cigv) if (e.second == 'M' || e.second == '=' || e.second == 'X' || e.second == 'I') rlen += e.first;
         int rpe = 0;            // readPositionExcludingSoftClipped
         auto foldPos = [&](int posExclSc) {
             return posExclSc < rlen - posExclSc ? posExclSc + 1 : rlen - posExclSc;
         };
 
-        for (uint32_t k = 0; k < c.n_cigar; ++k) {
-            int op = bam_cigar_op(cig[k]);
-            int len = bam_cigar_oplen(cig[k]);
+        for (uint32_t k = 0; k < cigv.size(); ++k) {
+            char op = cigv[k].second;
+            int len = cigv[k].first;
             switch (op) {
-            case BAM_CMATCH:
-            case BAM_CEQUAL:
-            case BAM_CDIFF: {
+            case 'M':
+            case '=':
+            case 'X': {
                 // Faithful port of CigarParser's matching-part loop with MNV growth: adjacent
                 // mismatches (bridging up to vext matching bases) are grown into a single variant
                 // whose description string joins the leading base(s) and the grown tail with '&'
@@ -145,32 +152,32 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     int gref = rpos + i;         // moving reference position (VarDict 'start')
                     int gq   = qpos + i;         // moving query offset (incl. soft-clip)
                     int grpe = rpe + i;          // moving readPositionExcludingSoftClipped
-                    char ch1 = baseChar(b, gq);
+                    char ch1 = bseq[gq];
                     if (ch1 == 'N') { i++; continue; }
-                    double q = qual[gq];
+                    double q = bqual[gq];
                     int qbases = 1;
                     std::string s(1, ch1);
                     std::string ss;
                     // Grow MNV while the current base mismatches the reference and quality is good.
                     while ((gref + 1) >= rlo && (gref + 1) <= rhi && (i + 1) < len &&
                            q >= cfg_.goodq &&
-                           ref_.at(gref) != baseChar(b, gq) && ref_.at(gref) != 'N') {
-                        if (qual[gq + 1] < cfg_.goodq + 5) break;
-                        char nuc = baseChar(b, gq + 1);
+                           ref_.at(gref) != bseq[gq] && ref_.at(gref) != 'N') {
+                        if (bqual[gq + 1] < cfg_.goodq + 5) break;
+                        char nuc = bseq[gq + 1];
                         if (nuc == 'N') break;
                         if (ref_.at(gref + 1) == 'N') break;
                         if (ref_.at(gref + 1) != nuc) {           // next base also mismatches
-                            ss += nuc; q += qual[gq + 1]; qbases++;
+                            ss += nuc; q += bqual[gq + 1]; qbases++;
                             gq++; gref++; grpe++; i++;
                         } else {                                  // bridge matching bases to next mismatch within vext
                             int ssn = 0;
                             for (int ssi = 1; ssi <= cfg_.vext; ssi++) {
                                 if (i + 1 + ssi >= len) break;
-                                if (baseChar(b, gq + 1 + ssi) != ref_.at(gref + 1 + ssi)) { ssn = ssi + 1; break; }
+                                if (bseq[gq + 1 + ssi] != ref_.at(gref + 1 + ssi)) { ssn = ssi + 1; break; }
                             }
                             if (ssn == 0) break;
-                            if (qual[gq + ssn] < cfg_.goodq + 5) break;
-                            for (int ssi = 1; ssi <= ssn; ssi++) { ss += baseChar(b, gq + ssi); q += qual[gq + ssi]; qbases++; }
+                            if (bqual[gq + ssn] < cfg_.goodq + 5) break;
+                            for (int ssi = 1; ssi <= ssn; ssi++) { ss += bseq[gq + ssi]; q += bqual[gq + ssi]; qbases++; }
                             gq += ssn; gref += ssn; grpe += ssn; i += ssn;
                         }
                     }
@@ -204,11 +211,11 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 rpos += len; qpos += len; rpe += len;
                 break;
             }
-            case BAM_CINS: {
+            case 'I': {
                 int p = rpos - 1; // insertion anchored to preceding reference base (VarDict convention)
                 std::string ins;
                 double qsum = 0;
-                for (int i = 0; i < len; ++i) { ins += baseChar(b, qpos + i); qsum += qual[qpos + i]; }
+                for (int i = 0; i < len; ++i) { ins += bseq[qpos + i]; qsum += bqual[qpos + i]; }
                 adjInsPos(p, ins, ref_);   // left-normalize insertion anchor in repeats
                 std::string sig = "+" + ins;
                 if (p >= rlo && p <= rhi && ins.find('N') == std::string::npos) {
@@ -226,14 +233,14 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 qpos += len; rpe += len;
                 break;
             }
-            case BAM_CDEL: {
+            case 'D': {
                 int p = rpos; // first deleted reference position
                 if (p >= rlo && p <= rhi) {
                     std::string dels;
                     for (int i = 0; i < len; ++i) dels += ref_.at(rpos + i);
                     std::string sig = "-" + std::to_string(len);
                     out.positionToDeletionCount[p][sig]++;
-                    int q = qpos < c.l_qseq ? qual[qpos] : 30;
+                    int q = qpos < (int)bseq.size() ? bqual[qpos] : 30;
                     int tp = foldPos(rpe);
                     Variation& v = out.nonInsertionVariants[p][sig];
                     v.varsCount++;
@@ -248,10 +255,10 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 rpos += len;
                 break;
             }
-            case BAM_CREF_SKIP:
+            case 'N':
                 rpos += len; // N (intron)
                 break;
-            case BAM_CSOFT_CLIP: {
+            case 'S': {
                 // Faithful port of processSoftClip's mis-softclip re-matching + consensus storage
                 // (chimeric SEED/SA detection is omitted; conf.chimeric defaults off and the seed
                 // map is not built). The re-matching converts soft-clipped bases that actually match
@@ -259,14 +266,14 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 // clips; the remaining high-quality bases are stored as a soft-clip consensus for
                 // realignment.
                 bool isFivePrime = (k == 0);
-                bool isThreePrime = (k == c.n_cigar - 1);
+                bool isThreePrime = (k == cigv.size() - 1);
                 if (isFivePrime) {
                     int st = rpos;   // aligned start (VarDict 'start' == position)
                     int el = len;    // remaining soft-clip length
                     while (el - 1 >= 0 && st - 1 > 0 && ref_.has(st - 1) &&
-                           baseChar(b, el - 1) == ref_.at(st - 1) && qual[el - 1] > 10) {
+                           bseq[el - 1] == ref_.at(st - 1) && bqual[el - 1] > 10) {
                         Variation& v = out.nonInsertionVariants[st - 1][std::string(1, ref_.at(st - 1))];
-                        addCnt(v, reverse, el, qual[el - 1], mapq, nm, cfg_.goodq);
+                        addCnt(v, reverse, el, bqual[el - 1], mapq, nm, cfg_.goodq);
                         if (st - 1 >= rlo && st - 1 <= rhi) out.refCoverage[st - 1]++;
                         st--; el--;
                     }
@@ -274,8 +281,8 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     if (el > 0) {
                         int lowq = 0, hq = 0, sumq = 0;
                         for (int si = el - 1; si >= 0; --si) {
-                            if (baseChar(b, si) == 'N') break;
-                            int bq = qual[si];
+                            if (bseq[si] == 'N') break;
+                            int bq = bqual[si];
                             if (bq <= 12) lowq++;
                             if (lowq > 1) break;
                             sumq += bq; hq++;
@@ -283,11 +290,11 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                         if (hq >= 1 && hq > lowq && st >= rlo && st <= rhi) {
                             Sclip& sc = out.softClips5End[st];
                             for (int si = el - 1; el - si <= hq; --si) {
-                                char ch = baseChar(b, si);
+                                char ch = bseq[si];
                                 int idx = el - 1 - si;
                                 sc.nt[idx][ch]++;
                                 addCnt(getVariationFromSeq(sc, idx, ch),
-                                       reverse, si - (el - hq), qual[si], mapq, nm, cfg_.goodq);
+                                       reverse, si - (el - hq), bqual[si], mapq, nm, cfg_.goodq);
                             }
                             addCnt(sc, reverse, len, (double)sumq / hq, mapq, nm, cfg_.goodq);
                         }
@@ -298,17 +305,17 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     int el = len;
                     int rpeLocal = rpe;
                     while (qp < c.l_qseq && ref_.has(st) &&
-                           baseChar(b, qp) == ref_.at(st) && qual[qp] > 10) {
+                           bseq[qp] == ref_.at(st) && bqual[qp] > 10) {
                         Variation& v = out.nonInsertionVariants[st][std::string(1, ref_.at(st))];
-                        addCnt(v, reverse, rlen - rpeLocal, qual[qp], mapq, nm, cfg_.goodq);
+                        addCnt(v, reverse, rlen - rpeLocal, bqual[qp], mapq, nm, cfg_.goodq);
                         if (st >= rlo && st <= rhi) out.refCoverage[st]++;
                         qp++; st++; el--; rpeLocal++;
                     }
                     if (c.l_qseq - qp > 0) {
                         int lowq = 0, hq = 0, sumq = 0;
                         for (int si = 0; si < el; ++si) {
-                            if (baseChar(b, qp + si) == 'N') break;
-                            int bq = qual[qp + si];
+                            if (bseq[qp + si] == 'N') break;
+                            int bq = bqual[qp + si];
                             if (bq <= 12) lowq++;
                             if (lowq > 1) break;
                             sumq += bq; hq++;
@@ -316,10 +323,10 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                         if (hq >= 1 && hq > lowq && st >= rlo && st <= rhi) {
                             Sclip& sc = out.softClips3End[st];
                             for (int si = 0; si < hq; ++si) {
-                                char ch = baseChar(b, qp + si);
+                                char ch = bseq[qp + si];
                                 sc.nt[si][ch]++;
                                 addCnt(getVariationFromSeq(sc, si, ch),
-                                       reverse, hq - si, qual[qp + si], mapq, nm, cfg_.goodq);
+                                       reverse, hq - si, bqual[qp + si], mapq, nm, cfg_.goodq);
                             }
                             addCnt(sc, reverse, len, (double)sumq / hq, mapq, nm, cfg_.goodq);
                         }
@@ -328,8 +335,8 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 qpos += len;
                 break;
             }
-            case BAM_CHARD_CLIP:
-            case BAM_CPAD:
+            case 'H':
+            case 'P':
             default:
                 break;
             }

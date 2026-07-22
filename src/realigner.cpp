@@ -604,6 +604,41 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
     }
 }
 
+// StructuralVariantsProcessor.adjSNV: merge a SHORT (<=5 bp) leftover soft-clip consensus into the
+// adjacent SNV whose first base matches the clip (adjCnt sets extracnt + qstd, and coverage grows).
+// This is the merge-back partner of CigarModifier's read-end soft-clipping; together they drive the
+// ExtraAF / QStd columns.
+void adjSNV(VariationData& vd, Reference& ref) {
+    auto& NIV = vd.nonInsertionVariants;
+    for (auto& [position, sclip] : vd.softClips5End) {
+        if (sclip.used) continue;
+        std::string seq = findconseq(sclip);
+        if ((int)seq.size() > 5 || seq.empty()) continue;
+        std::string bp = seq.substr(0, 1);
+        int prev = position - 1;
+        auto pit = NIV.find(prev);
+        if (pit == NIV.end()) continue;
+        auto vit = pit->second.find(bp);
+        if (vit == pit->second.end()) continue;
+        if (seq.size() > 1 && !(ref.has(position - 2) && ref.at(position - 2) == seq[1])) continue;
+        adjCnt(vit->second, sclip);
+        vd.refCoverage[prev] += sclip.varsCount;
+    }
+    for (auto& [position, sclip] : vd.softClips3End) {
+        if (sclip.used) continue;
+        std::string seq = findconseq(sclip);
+        if ((int)seq.size() > 5 || seq.empty()) continue;
+        std::string bp = seq.substr(0, 1);
+        auto pit = NIV.find(position);
+        if (pit == NIV.end()) continue;
+        auto vit = pit->second.find(bp);
+        if (vit == pit->second.end()) continue;
+        if (seq.size() > 1 && !(ref.has(position + 1) && ref.at(position + 1) == seq[1])) continue;
+        adjCnt(vit->second, sclip);
+        vd.refCoverage[position] += sclip.varsCount;
+    }
+}
+
 // ---- realignlgdel (large deletions from soft-clip breakpoints) -----------------------------------
 // Faithful port of the findbp path of VariationRealigner.realignlgdel. The bp==0 fallback (seed-based
 // findMatch + discordant-pair SV clusters + partialPipeline on extended regions) is gated off — those
