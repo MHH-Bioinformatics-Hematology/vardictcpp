@@ -28,6 +28,7 @@ struct Config {
     double qratio = 1.5;      // -o  minimum hi/lo-quality ratio (isGoodVar)
     double monomerMsiFrequency = 0.25;    // --mfreq
     double nonMonomerMsiFrequency = 0.1;  // --nmfreq
+    int vext = 2;             // -X  extension for MNV/complex-variant growth
     int minMatch = 0;         // -M
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F

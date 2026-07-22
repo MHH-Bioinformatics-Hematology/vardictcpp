@@ -86,29 +86,77 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             switch (op) {
             case BAM_CMATCH:
             case BAM_CEQUAL:
-            case BAM_CDIFF:
-                for (int i = 0; i < len; ++i) {
-                    int p = rpos + i;
-                    int tp = foldPos(rpe + i);
-                    if (p < rlo || p > rhi) continue;
-                    char base = baseChar(b, qpos + i);
-                    int q = qual[qpos + i];
-
-                    out.refCoverage[p]++;
-                    Variation& v = out.nonInsertionVariants[p][std::string(1, base)];
-                    if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
-                    if (!v.qstd && v.pq != 0 && (double)q != v.pq) v.qstd = true;
-                    v.varsCount++;
-                    v.incDir(reverse);
-                    v.meanPosition += tp;
-                    v.meanQuality += q;
-                    v.meanMappingQuality += mapq;
-                    v.numberOfMismatches += nm;
-                    if (q >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
-                    v.pp = tp; v.pq = q;
+            case BAM_CDIFF: {
+                // Faithful port of CigarParser's matching-part loop with MNV growth: adjacent
+                // mismatches (bridging up to vext matching bases) are grown into a single variant
+                // whose description string joins the leading base(s) and the grown tail with '&'
+                // (e.g. "A&CG"). Single-base matches (the common case) reduce to one variation "X".
+                // Adjacent-indel bridging within an M-segment (the '^'/'#'/'-N&' grammar) is not
+                // grown here; those complex cases are left to the I/D handlers.
+                int i = 0;
+                while (i < len) {
+                    int gref = rpos + i;         // moving reference position (VarDict 'start')
+                    int gq   = qpos + i;         // moving query offset (incl. soft-clip)
+                    int grpe = rpe + i;          // moving readPositionExcludingSoftClipped
+                    char ch1 = baseChar(b, gq);
+                    if (ch1 == 'N') { i++; continue; }
+                    double q = qual[gq];
+                    int qbases = 1;
+                    std::string s(1, ch1);
+                    std::string ss;
+                    // Grow MNV while the current base mismatches the reference and quality is good.
+                    while ((gref + 1) >= rlo && (gref + 1) <= rhi && (i + 1) < len &&
+                           q >= cfg_.goodq &&
+                           ref_.at(gref) != baseChar(b, gq) && ref_.at(gref) != 'N') {
+                        if (qual[gq + 1] < cfg_.goodq + 5) break;
+                        char nuc = baseChar(b, gq + 1);
+                        if (nuc == 'N') break;
+                        if (ref_.at(gref + 1) == 'N') break;
+                        if (ref_.at(gref + 1) != nuc) {           // next base also mismatches
+                            ss += nuc; q += qual[gq + 1]; qbases++;
+                            gq++; gref++; grpe++; i++;
+                        } else {                                  // bridge matching bases to next mismatch within vext
+                            int ssn = 0;
+                            for (int ssi = 1; ssi <= cfg_.vext; ssi++) {
+                                if (i + 1 + ssi >= len) break;
+                                if (baseChar(b, gq + 1 + ssi) != ref_.at(gref + 1 + ssi)) { ssn = ssi + 1; break; }
+                            }
+                            if (ssn == 0) break;
+                            if (qual[gq + ssn] < cfg_.goodq + 5) break;
+                            for (int ssi = 1; ssi <= ssn; ssi++) { ss += baseChar(b, gq + ssi); q += qual[gq + ssi]; qbases++; }
+                            gq += ssn; gref += ssn; grpe += ssn; i += ssn;
+                        }
+                    }
+                    if (!ss.empty()) s += "&" + ss;
+                    int pos = gref - qbases + 1;                  // leftmost covered position
+                    double qavg = q / qbases;
+                    int tp = grpe < rlen - grpe ? grpe + 1 : rlen - grpe;
+                    if (pos >= rlo && pos <= rhi && s.find('N') == std::string::npos) {
+                        Variation& v = out.nonInsertionVariants[pos][s];
+                        if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
+                        if (!v.qstd && v.pq != 0 && qavg != v.pq) v.qstd = true;
+                        v.varsCount++;
+                        v.incDir(reverse);
+                        v.meanPosition += tp;
+                        v.meanQuality += qavg;
+                        v.meanMappingQuality += mapq;
+                        v.numberOfMismatches += nm;
+                        v.pp = tp; v.pq = qavg;
+                        if (qavg >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
+                        // reference coverage for every base covered by this variation
+                        for (int qi = 1; qi <= qbases; ++qi) {
+                            int cp = gref - qi + 1;
+                            if (cp >= rlo && cp <= rhi) out.refCoverage[cp]++;
+                        }
+                        // MNP bookkeeping (one base + '&' + more bases)
+                        if (ss.size() >= 1 && s.find('&') != std::string::npos)
+                            out.mnp[pos][s]++;
+                    }
+                    i++;
                 }
                 rpos += len; qpos += len; rpe += len;
                 break;
+            }
             case BAM_CINS: {
                 int p = rpos - 1; // insertion anchored to preceding reference base (VarDict convention)
                 if (p >= rlo && p <= rhi) {

@@ -132,7 +132,21 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                      + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads));
             var.duprate = vd.duprate();
 
-            if (allele[0] == '+') {                    // insertion (rare in nonInsertion map)
+            if (allele.find('&') != std::string::npos) {   // MNV / complex (e.g. "A&CG" -> ACG)
+                std::string va;
+                for (char ch : allele) if (ch != '&') va += ch;
+                var.varallele = va;
+                std::string ra;
+                for (int k = 0; k < (int)va.size(); ++k) ra += ref.at(position + k);
+                var.refallele = ra;
+                var.endPosition = position + (int)va.size() - 1;
+                // MSI for MNP/complex uses the same SNV/MNP reference window as findMSI.
+                std::string t1, t2;
+                for (int q = position - 30; q <= position + 1; ++q) if (q >= 1) t1 += ref.at(q);
+                for (int q = position + 2; q <= position + 70; ++q) t2 += ref.at(q);
+                MSIResult m = findMSI(t1, t2);
+                var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
+            } else if (allele[0] == '+') {              // insertion (rare in nonInsertion map)
                 var.refallele = std::string(1, refBase);
                 var.varallele = std::string(1, refBase) + allele.substr(1);
             } else if (allele[0] == '-') {             // deletion signature "-N"

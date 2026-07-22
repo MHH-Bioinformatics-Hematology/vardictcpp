@@ -13,6 +13,7 @@ struct VariationData {
     std::map<int, VarMap> nonInsertionVariants; // position -> allele -> Variation
     std::map<int, VarMap> insertionVariants;    // position -> "+SEQ" -> Variation
     std::map<int, int>    refCoverage;          // position -> total coverage
+    std::map<int, std::map<std::string,int>> mnp; // position -> MNV description -> count
     int  maxReadLength = 0;
     long totalReads = 0;
     long dupReads = 0;
