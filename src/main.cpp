@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <map>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -24,23 +25,15 @@ using namespace vardict;
 
 static void usage() {
     std::fprintf(stderr,
-      "vardictcpp - C++ port of VarDict (simple/pileup counting core)\n"
+      "vardictcpp - C++ port of VarDict (single-sample simple/pileup calling)\n"
+      "Accepts VarDict's full option syntax (commons-cli style, e.g. -th 8, -VS STRICT).\n"
       "Usage: vardictcpp -G ref.fa -b in.bam -N sample [-R chr:s-e | BED] [options]\n"
-      "  -G FILE   indexed reference fasta (required)\n"
-      "  -b FILE   indexed BAM (required)\n"
-      "  -N STR    sample name\n"
-      "  -R STR    region chr:start-end\n"
-      "  -c/-S/-E/-g N  BED columns for chr/start/end/gene (1-based; default 1/2/3/4)\n"
-      "  -f FLOAT  min allele frequency (default 0.01; 0 keeps all alt positions)\n"
-      "  -r INT    min alt reads (default 2)\n"
-      "  -q INT    min base quality for hi-qual (default 25)\n"
-      "  -O INT    min mapping quality (default 0)\n"
-      "  -x INT    region extension bp (default 0)\n"
-      "  -p        pileup mode (emit every position)\n"
-      "  -t        remove duplicate reads\n"
-      "  -h        print header\n"
-      "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n"
-      "  (positional: BED file)\n");
+      "  Acted on: -G -b -N -R -c -S -E -g -f -r -q -O -P -o -B -X -I -L -x -F -z -p -t -h -k\n"
+      "            -mfreq -nmfreq --chunk -th/--threads\n"
+      "  Accepted (parsed, VarDict-compatible; not all affect output yet): -A -M -Q -T -V -W -w -Y\n"
+      "            -Z -d -e -n -s -v -y -3 -C -D -K -U -UN -j -J -DP -VS -adaptor -deldupvar -m\n"
+      "  Not implemented (errors): -a/--amplicon, --fisher, somatic (two BAMs -b 't|n')\n"
+      "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n");
 }
 
 static std::vector<Region> loadBed(const Config& c) {
@@ -68,43 +61,87 @@ static std::vector<Region> loadBed(const Config& c) {
     return regs;
 }
 
+// VarDict's full option set (commons-cli). Value here = does the option take an argument.
+// Parsing mirrors commons-cli: options are `-name [value]` (single dash, names may be multi-char such
+// as th/VS/DP/mfreq/chimeric) or `--long`. Every VarDict option is accepted so any VarDict command line
+// parses; options this port does not act on are recorded but ignored (see below), and unsupported
+// *modes* error out rather than silently mis-call.
+static const std::map<std::string, bool> VARDICT_OPTS = {
+    {"A",1},{"B",1},{"DP",1},{"E",1},{"F",1},{"G",1},{"I",1},{"J",1},{"L",1},{"M",1},{"N",1},{"O",1},
+    {"P",1},{"Q",1},{"R",1},{"S",1},{"T",1},{"V",1},{"VS",1},{"W",1},{"X",1},{"Y",1},{"Z",1},{"a",1},
+    {"adaptor",1},{"b",1},{"c",1},{"d",1},{"e",1},{"f",1},{"g",1},{"j",1},{"m",1},{"mfreq",1},{"n",1},
+    {"nmfreq",1},{"o",1},{"q",1},{"r",1},{"s",1},{"w",1},{"x",1},{"chunk",1},{"th",1},{"threads",1},
+    {"3",0},{"C",0},{"D",0},{"H",0},{"K",0},{"U",0},{"UN",0},{"chimeric",0},{"deldupvar",0},{"fisher",0},
+    {"h",0},{"i",0},{"k",0},{"p",0},{"t",0},{"u",0},{"v",0},{"y",0},{"z",0},{"?",0},
+};
+
 int main(int argc, char** argv) {
     Config c;
-    bool zeroBasedSet = false;
+    std::map<std::string, std::string> opt;   // parsed options (name -> value; flags -> "")
+    std::vector<std::string> positional;
 
-    static struct option longopts[] = {
-        {"chunk",   required_argument, nullptr, 1000},
-        {"threads", required_argument, nullptr, 1001},
-        {"th",      required_argument, nullptr, 1001},
-        {nullptr, 0, nullptr, 0}
-    };
-    int ch;
-    while ((ch = getopt_long(argc, argv, "G:b:N:R:c:S:E:g:f:r:q:O:x:F:z::pth", longopts, nullptr)) != -1) {
-        switch (ch) {
-        case 'G': c.ref = optarg; break;
-        case 'b': c.bam = optarg; break;
-        case 'N': c.sample = optarg; break;
-        case 'R': c.region = optarg; break;
-        case 'c': c.colChr = std::atoi(optarg); break;
-        case 'S': c.colStart = std::atoi(optarg); break;
-        case 'E': c.colEnd = std::atoi(optarg); break;
-        case 'g': c.colGene = std::atoi(optarg); break;
-        case 'f': c.freq = std::atof(optarg); break;
-        case 'r': c.minReads = std::atoi(optarg); break;
-        case 'q': c.goodq = std::atof(optarg); break;
-        case 'O': c.mapqMin = std::atof(optarg); break;
-        case 'x': c.numberNucleotideToExtend = std::atoi(optarg); break;
-        case 'F': c.samFilterFlag = (int)std::strtol(optarg, nullptr, 0); break;
-        case 'z': c.zeroBased = (optarg ? std::atoi(optarg) != 0 : true); zeroBasedSet = true; break;
-        case 'p': c.doPileup = true; break;
-        case 't': c.removeDuplicates = true; break;
-        case 'h': c.printHeader = true; break;
-        case 1000: c.chunkSize = std::atoi(optarg); break;
-        case 1001: c.threads = std::max(1, std::atoi(optarg)); break;
-        default: usage(); return 1;
-        }
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a.size() >= 1 && a[0] == '-' && a != "-") {
+            int d = 0; while (d < (int)a.size() && a[d] == '-') d++;   // strip 1 or 2 leading dashes
+            std::string name = a.substr(d);
+            std::string inlineVal;
+            auto eq = name.find('=');
+            if (eq != std::string::npos) { inlineVal = name.substr(eq + 1); name = name.substr(0, eq); }
+            auto it = VARDICT_OPTS.find(name);
+            if (it == VARDICT_OPTS.end()) {
+                std::fprintf(stderr, "vardictcpp: unknown option -%s\n", name.c_str());
+                usage(); return 1;
+            }
+            if (it->second) { // takes an argument
+                if (!inlineVal.empty()) opt[name] = inlineVal;
+                else if (i + 1 < argc) opt[name] = argv[++i];
+                else { std::fprintf(stderr, "vardictcpp: option -%s requires a value\n", name.c_str()); return 1; }
+            } else opt[name] = "";
+        } else positional.push_back(a);
     }
-    if (optind < argc) c.bed = argv[optind];
+    auto has = [&](const char* k){ return opt.count(k) != 0; };
+    auto val = [&](const char* k, const char* d){ auto it = opt.find(k); return it == opt.end() ? std::string(d) : it->second; };
+
+    // Modes this port does not implement -> refuse rather than emit wrong output.
+    if (has("a")) { std::fprintf(stderr, "vardictcpp: amplicon mode (-a) is not implemented\n"); return 2; }
+    if (has("fisher")) { std::fprintf(stderr, "vardictcpp: --fisher is not implemented\n"); return 2; }
+
+    c.ref = val("G", "");
+    c.bam = val("b", "");
+    if (c.bam.find('|') != std::string::npos) { std::fprintf(stderr, "vardictcpp: somatic (paired) mode is not implemented\n"); return 2; }
+    c.sample = val("N", "");
+    c.region = val("R", "");
+    c.colChr = std::atoi(val("c", "1").c_str());
+    c.colStart = std::atoi(val("S", "2").c_str());
+    c.colEnd = std::atoi(val("E", "3").c_str());
+    c.colGene = std::atoi(val("g", "4").c_str());
+    c.freq = std::atof(val("f", "0.01").c_str());
+    c.minReads = std::atoi(val("r", "2").c_str());
+    c.minBiasReads = std::atoi(val("B", "2").c_str());
+    c.goodq = std::atof(val("q", "22.5").c_str());
+    c.mapqMin = std::atof(val("O", "0").c_str());
+    c.readPosFilter = std::atoi(val("P", "5").c_str());
+    c.qratio = std::atof(val("o", "1.5").c_str());
+    c.vext = std::atoi(val("X", "2").c_str());
+    c.indelsize = std::atoi(val("I", "50").c_str());
+    c.SVMINLEN = std::atoi(val("L", "1000").c_str());
+    c.monomerMsiFrequency = std::atof(val("mfreq", "0.25").c_str());
+    c.nonMonomerMsiFrequency = std::atof(val("nmfreq", "0.1").c_str());
+    c.numberNucleotideToExtend = std::atoi(val("x", "0").c_str());
+    if (has("F")) c.samFilterFlag = (int)std::strtol(opt["F"].c_str(), nullptr, 0);
+    c.zeroBased = has("z");
+    c.doPileup = has("p");
+    c.removeDuplicates = has("t");
+    c.printHeader = has("h");
+    c.chimeric = has("chimeric");
+    if (has("k")) c.performLocalRealignment = std::atoi(val("k", "1").c_str()) != 0;
+    c.chunkSize = std::atoi(val("chunk", "0").c_str());
+    c.threads = std::max(1, std::atoi(val(has("threads") ? "threads" : "th", "1").c_str()));
+    if (has("H") || has("?")) { usage(); return 0; }
+
+    bool zeroBasedSet = has("z");
+    if (!positional.empty()) c.bed = positional[0];
     if (c.ref.empty() || c.bam.empty()) { usage(); return 1; }
 
     // Build regions.
