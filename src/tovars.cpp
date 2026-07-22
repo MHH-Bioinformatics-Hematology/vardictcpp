@@ -41,6 +41,35 @@ static bool isGoodVar(const Config& c, const Variant& v, int refHicnt, double re
     return true;
 }
 
+// Port of ToVarsBuilder.findMSI. tseq1 = left ref window ending at/after the variant, tseq2 = right
+// ref window. Returns {msi count, shift3, microsatellite-unit length}. Repeat counting is done
+// directly (alleles are ACGTN) rather than via regex, matching ((unit)+)$ on tseq1 and ^((unit)+) on tseq2.
+struct MSIResult { double msi; int shift3; int msintLen; };
+static MSIResult findMSI(const std::string& tseq1, const std::string& tseq2) {
+    int nmsi = 1;
+    double msicnt = 0;
+    std::string maxmsi;
+    while (nmsi <= (int)tseq1.size() && nmsi <= 6) {
+        std::string unit = tseq1.substr(tseq1.size() - nmsi); // substr(tseq1, -nmsi)
+        // trailing repeats of `unit` in tseq1
+        int t1 = 0;
+        while ((int)tseq1.size() - (t1 + 1) * nmsi >= 0 &&
+               tseq1.compare(tseq1.size() - (t1 + 1) * nmsi, nmsi, unit) == 0) t1++;
+        double curmsi = (double)(t1 * nmsi) / nmsi;
+        // leading repeats of `unit` in tseq2
+        int t2 = 0;
+        while ((t2 + 1) * nmsi <= (int)tseq2.size() &&
+               tseq2.compare(t2 * nmsi, nmsi, unit) == 0) t2++;
+        curmsi += (double)(t2 * nmsi) / nmsi;
+        if (curmsi > msicnt) { maxmsi = unit; msicnt = curmsi; }
+        nmsi++;
+    }
+    std::string tseq = tseq1 + tseq2;
+    int shift3 = 0;
+    while (shift3 < (int)tseq2.size() && tseq[shift3] == tseq2[shift3]) shift3++;
+    return { msicnt, shift3, (int)maxmsi.size() };
+}
+
 static std::string classifyType(const std::string& ref, const std::string& alt) {
     if (alt.size() == 1 && ref.size() == 1) return "SNV";
     if (!alt.empty() && alt[0] == '+') return "Insertion";
@@ -98,7 +127,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
             var.qratio = v.lowQualityReadsCount > 0
                        ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
-                       : (double)v.highQualityReadsCount; // hi/lo signal-to-noise
+                       : (double)v.highQualityReadsCount / 0.5; // hi/lo signal-to-noise
             var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads))
                      + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads));
             var.duprate = vd.duprate();
@@ -116,15 +145,21 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             } else {                                    // SNV
                 var.refallele = std::string(1, refBase);
                 var.varallele = allele;
+                // MSI adjustment for SNV/MNP (ToVarsBuilder: findMSI on ref[p-30..p+1], ref[p+2..p+70]).
+                std::string tseq1, tseq2;
+                for (int q = position - 30; q <= position + 1; ++q) if (q >= 1) tseq1 += ref.at(q);
+                for (int q = position + 2; q <= position + 70; ++q) tseq2 += ref.at(q);
+                MSIResult m = findMSI(tseq1, tseq2);
+                var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
             }
             var.vartype = classifyType(var.refallele, var.varallele);
             var.genotype = var.frequency < 0.5
                          ? var.refallele + "/" + var.varallele
                          : var.varallele + "/" + var.varallele;
 
-            // Reference-context columns (flanks): 5 bp windows from the reference.
-            for (int i = 5; i >= 1; --i) var.leftseq += ref.at(position - i);
-            for (int i = 1; i <= 5; ++i) var.rightseq += ref.at(position + 1 + i - 1);
+            // Reference-context flanks: 20 bp windows (ToVarsBuilder REF_20_BASES).
+            for (int i = 20; i >= 1; --i) if (position - i >= 1) var.leftseq += ref.at(position - i);
+            for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(var.endPosition + i);
 
             if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
             result.push_back(std::move(var));
@@ -155,11 +190,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.duprate = vd.duprate();
                 var.qratio = v.lowQualityReadsCount > 0
                            ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
-                           : (double)v.highQualityReadsCount;
+                           : (double)v.highQualityReadsCount / 0.5;
                 var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads))
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads));
-                for (int i = 5; i >= 1; --i) var.leftseq += ref.at(position - i);
-                for (int i = 1; i <= 5; ++i) var.rightseq += ref.at(position + i);
+                for (int i = 20; i >= 1; --i) if (position - i >= 1) var.leftseq += ref.at(position - i);
+                for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(position + i);
                 if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
                 result.push_back(std::move(var));
             }

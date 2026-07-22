@@ -57,22 +57,30 @@ interval length (identical mechanism to the `--chunk` flag added to VarDictJava 
 
 **Implemented (validated):** single-sample counting core — BAM iteration with SAM-flag / mapq
 filtering and optional duplicate removal; CIGAR M/=/X/I/D/N/S handling; per-position ref coverage and
-per-allele counts (strand, base-quality, mapping-quality, NM, hi/lo-quality, pstd/qstd); `-f`
-frequency filter; strand-bias flag; AF/PMean/QMean/MQ/HiAF and the 36-column simple output;
-reference flanks; `--chunk` windowing; streaming per-region memory release.
+per-allele counts (strand, base-quality, mapping-quality, NM, hi/lo-quality, pstd/qstd) using
+VarDict's exact read-position convention (distance to nearest read end); `-f` frequency filter;
+**`isGoodVar`** quality gate for default (non-pileup) mode; strand-bias flag; AF/PMean/PStd/QMean/QStd/
+MQ/Sig_Noise/HiAF; **`findMSI`** (MSI / MSI_NT / shift3) for the SNV/MNP path; 20 bp reference flanks;
+the exact 36-column output formatting (`value==0 ? "0"` rules); `--chunk` windowing; streaming
+per-region memory release.
 
-**Validation** (vs VarDictJava 1.8.3 pileup on a 1 Mb / 300× synthetic region, matched SNV alleles):
-Depth exact **97.7 %** (mean abs diff 0.03 reads), AltDepth exact **93.3 %** (0.14 reads). The
-residual ±1-read differences are VarDict's paired-read **mate-overlap deduplication**, not yet ported.
+**Validation vs VarDictJava 1.8.3:**
+- *Pileup counting* (1 Mb / 300× synthetic, matched SNV alleles): Depth exact **97.7 %** (mean abs
+  diff 0.03 reads), AltDepth exact **93.3 %** (0.14 reads).
+- *Default simple mode* (hg19 panel, `-f 0.01`): **6 of VarDictJava's 9 calls reproduce byte-for-byte
+  across all 36 columns** (counts, AF, PMean/QMean, MSI, flanks, Seg, Duprate). The 3 that differ are
+  an MNP (`TCC>ACG`, needs `adjustMNP`), an insertion needing realignment left-normalization, and one
+  SNV off by a single alt read (see below).
 
 **Not yet ported (needed for full byte-for-byte parity):**
 
-- Mate-overlap de-counting (`skipOverlappingReads`) — accounts for the ±1-read residual above.
-- Local **realignment** (`VariationRealigner`: realigndel/ins/lgdel/lgins, MNP adjust) and soft-clip
-  consensus — required for correct indel calls and `isGoodVar` gating.
+- The ±1-read residual on some positions: VarDict's base-quality / neighbour handling in the matching
+  increment (MNV growth, insertion-edge count adjustment). (`skipOverlappingReads` is *off* by default
+  — only under `-u`/`-UN` — so it is not the cause.)
+- **`adjustMNP`** — merges adjacent SNVs into MNPs (the `TCC>ACG` case).
+- Local **realignment** (`VariationRealigner`: realigndel/ins/lgdel/lgins) and soft-clip consensus —
+  required for correct indel calls and left-normalization.
 - **Structural variants** (`StructuralVariantsProcessor`).
-- `isGoodVar` quality gate, `findMSI` / `shift3` / `MSI` columns, exact PMean/quality conventions,
-  HALF_EVEN rounding for byte-identical numeric formatting.
 - **Somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + Brent `zeroin`).
 
 These map 1:1 onto the remaining Java modules (see the table) and are the roadmap to full parity.

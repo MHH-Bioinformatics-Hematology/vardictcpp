@@ -112,8 +112,9 @@ int main(int argc, char** argv) {
         r.gene = r.chr;
         regions.push_back(r);
     } else if (!c.bed.empty()) {
-        // 4-column custom BED defaults to zero-based unless -z given (matches VarDict).
-        if (!zeroBasedSet) c.zeroBased = true;
+        // VarDict only auto-zero-bases the 4-column *custom* format, which applies when -c is NOT set.
+        // When -c/-S/-E/-g are given the BED is treated 1-based unless -z is passed explicitly.
+        (void)zeroBasedSet;
         regions = loadBed(c);
     } else {
         std::fprintf(stderr, "error: need -R or a BED file\n");

@@ -65,7 +65,20 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         const uint32_t* cig = bam_get_cigar(b);
         const uint8_t* qual = bam_get_qual(b);
         int rpos = c.pos + 1;   // 1-based reference position of current op
-        int qpos = 0;           // 0-based query offset
+        int qpos = 0;           // 0-based query offset (includes soft-clip)
+
+        // VarDict read-position convention: position within the aligned read (M+I only, excluding
+        // soft-clip), folded to the distance from the nearest read end. Precompute the aligned length.
+        int rlen = 0;           // readLengthIncludeMatchingAndInsertions
+        for (uint32_t k = 0; k < c.n_cigar; ++k) {
+            int op = bam_cigar_op(cig[k]);
+            if (op == BAM_CMATCH || op == BAM_CEQUAL || op == BAM_CDIFF || op == BAM_CINS)
+                rlen += bam_cigar_oplen(cig[k]);
+        }
+        int rpe = 0;            // readPositionExcludingSoftClipped
+        auto foldPos = [&](int posExclSc) {
+            return posExclSc < rlen - posExclSc ? posExclSc + 1 : rlen - posExclSc;
+        };
 
         for (uint32_t k = 0; k < c.n_cigar; ++k) {
             int op = bam_cigar_op(cig[k]);
@@ -76,26 +89,25 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             case BAM_CDIFF:
                 for (int i = 0; i < len; ++i) {
                     int p = rpos + i;
+                    int tp = foldPos(rpe + i);
                     if (p < rlo || p > rhi) continue;
                     char base = baseChar(b, qpos + i);
                     int q = qual[qpos + i];
-                    // read cycle (position within read from the sequenced 5' end)
-                    int rp = reverse ? (c.l_qseq - (qpos + i)) : (qpos + i + 1);
 
                     out.refCoverage[p]++;
                     Variation& v = out.nonInsertionVariants[p][std::string(1, base)];
+                    if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
+                    if (!v.qstd && v.pq != 0 && (double)q != v.pq) v.qstd = true;
                     v.varsCount++;
                     v.incDir(reverse);
-                    v.meanPosition += rp;
+                    v.meanPosition += tp;
                     v.meanQuality += q;
                     v.meanMappingQuality += mapq;
                     v.numberOfMismatches += nm;
                     if (q >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
-                    if (v.varsCount > 1 && v.pp != 0 && v.pp != rp) v.pstd = true;
-                    if (v.varsCount > 1 && v.pq != 0 && v.pq != (double)q) v.qstd = true;
-                    v.pp = rp; v.pq = q;
+                    v.pp = tp; v.pq = q;
                 }
-                rpos += len; qpos += len;
+                rpos += len; qpos += len; rpe += len;
                 break;
             case BAM_CINS: {
                 int p = rpos - 1; // insertion anchored to preceding reference base (VarDict convention)
@@ -103,17 +115,17 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     std::string sig = "+";
                     double qsum = 0;
                     for (int i = 0; i < len; ++i) { sig += baseChar(b, qpos + i); qsum += qual[qpos + i]; }
-                    int rp = reverse ? (c.l_qseq - qpos) : (qpos + 1);
+                    int tp = foldPos(rpe);
                     Variation& v = out.insertionVariants[p][sig];
                     v.varsCount++;
                     v.incDir(reverse);
-                    v.meanPosition += rp;
+                    v.meanPosition += tp;
                     v.meanQuality += qsum / (len ? len : 1);
                     v.meanMappingQuality += mapq;
                     v.numberOfMismatches += nm;
                     v.highQualityReadsCount++;
                 }
-                qpos += len;
+                qpos += len; rpe += len;
                 break;
             }
             case BAM_CDEL: {
@@ -123,11 +135,11 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     for (int i = 0; i < len; ++i) dels += ref_.at(rpos + i);
                     std::string sig = "-" + std::to_string(len);
                     int q = qpos < c.l_qseq ? qual[qpos] : 30;
-                    int rp = reverse ? (c.l_qseq - qpos) : (qpos + 1);
+                    int tp = foldPos(rpe);
                     Variation& v = out.nonInsertionVariants[p][sig];
                     v.varsCount++;
                     v.incDir(reverse);
-                    v.meanPosition += rp;
+                    v.meanPosition += tp;
                     v.meanQuality += q;
                     v.meanMappingQuality += mapq;
                     v.numberOfMismatches += nm;
