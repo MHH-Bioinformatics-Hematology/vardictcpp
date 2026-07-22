@@ -91,19 +91,27 @@ insertion left-normalization (`adjInsPos`). These attribute nearby mismatch SNVs
 consensus reads to an indel and merge duplicate representations. They run in VarDict's order
 (`realigndel` → `realignins` → `adjustMNP`) and are functioning + non-regressing.
 
-**Not yet ported (needed for full byte-for-byte parity) — the SV / large-indel subsystem:**
+**`realignlgdel`** (large deletions from soft-clip breakpoints via `findbp`) is ported and **enabled**:
+each 5'/3' soft-clip consensus is slid against the reference to find a large-deletion breakpoint, the
+`-dellen` variation is created, the soft-clip reads are reassigned into it, and the intervening SNVs
+in the deleted span are removed (`rmCnt`). **`realignlgins30`** + `find35match` (large insertions from
+paired 5'/3' soft-clips: plain insertion, tandem-dup, complex del/MNP) are ported but **disabled** —
+without VarDict's adaptor filtering and the inner realign re-calls a partial run can synthesize a
+spurious adapter insertion.
 
-- **`realignlgins`/`realignlgdel`** + **`StructuralVariantsProcessor`** (`findDEL`/`findINV`/`findDUP`/
-  `findsv`, `findMatch`) + the SV-cluster detection in `CigarParser` (`prepareSVStructuresForAnalysis`,
-  discordant/split-read clustering, `isReadChimericWithSA`). This ~4 K-line subsystem reassigns
-  soft-clip-supported large indels/SVs and is what removes the remaining panel false-positives
-  (one-strand homopolymer SNVs, alignment-ambiguous insertions VarDict explains as larger events).
-  It is the deepest remaining piece.
+**Not yet ported (needed for full byte-for-byte parity):**
+
+- To enable `realignlgins30`: adaptor filtering in `findconseq`, the inner `realignins`/`realigndel`
+  re-calls on the created variation, and the seed-based single-clip `findMatch` fallback.
+- **`realignlgins`** (duplications) + **`StructuralVariantsProcessor`** (`findDEL`/`findINV`/`findDUP`/
+  `findsv`, `findMatch`) + SV-cluster detection in `CigarParser` (`prepareSVStructuresForAnalysis`,
+  discordant/split-read clustering from the `SA` tag). This is the deepest interlocking subsystem and
+  is what removes the last panel false-positives (one-strand homopolymer SNVs).
 - Faithful **distributed coverage** at indel/MNP-dense positions (the `TCC>ACG` Depth 46 vs 35).
 - **Somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + Brent `zeroin`).
 
-The single-variant + small-indel pipeline (CIGAR parse → MNV/MNP → soft-clip → small-indel realign →
-call/format) is now ported and functioning; the SV/large-indel subsystem is the main remaining work.
+Ported & enabled: CIGAR parse → MNV/MNP → soft-clip → small-indel realign → **large-deletion realign**
+→ call/format. Disabled/remaining: large-insertion (lgins30/lgins) + the discordant-pair SV subsystem.
 
 ## License
 
