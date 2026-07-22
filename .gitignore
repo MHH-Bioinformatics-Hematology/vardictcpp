@@ -1,0 +1,4 @@
+build/
+*.o
+*.tsv
+compile_commands.json
