@@ -76,9 +76,11 @@ realignment) and **`adjustMNP`** (merges partial SNVs into the MNP they belong t
 removes them). ExtraAF is derived from `extracnt`.
 
 **Validation vs VarDictJava 1.8.3:**
-- *Pileup counting* (1 Mb / 300× synthetic, matched SNV alleles): Depth exact **97.9 %** (mean abs
-  diff 0.027 reads), AltDepth exact **99.7 %** (0.006 reads) — MNV growth brought AltDepth up from
-  93.3 %.
+- *Broad variant-set parity* (1 Mb / 300× synthetic, default simple mode, **1807 variants**): the C++
+  calls the **exact same variant set — 0 false-positives, 0 false-negatives**. (Full-row byte-identity
+  is lower only because of two realignment-derived metric columns; see the `CigarModifier` note.)
+- *Pileup counting* (matched SNV alleles): Depth exact **97.9 %** (mean abs diff 0.027 reads),
+  AltDepth exact **99.7 %** (0.006 reads) — MNV growth brought AltDepth up from 93.3 %.
 - *Default simple mode* (hg19 panel, `-f 0.01`): the C++ output is now the **same 9-variant set as
   VarDictJava with ZERO false-positives**, of which **7 of 9 reproduce byte-for-byte across all 36
   columns**. The last false-positives were removed by matching VarDict's read filter (drop reads
