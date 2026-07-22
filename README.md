@@ -85,20 +85,25 @@ removes them). ExtraAF is derived from `extracnt`.
   and AltDepth (Depth still differs — see coverage note). The port currently emits extra indel/edge
   calls that VarDict's realignment reassigns or removes (below).
 
-**Not yet ported (needed for full byte-for-byte parity) — the realignment engine:**
+Also ports the **small-indel realignment engine** (`realigner.cpp`): `realignins`/`realigndel` with
+`findMM3`/`findMM5`, `findconseq`, `ismatch`, `joinRef`, `adjCnt`/`adjRefCnt`/`adjRefFactor`, and
+insertion left-normalization (`adjInsPos`). These attribute nearby mismatch SNVs and soft-clip
+consensus reads to an indel and merge duplicate representations. They run in VarDict's order
+(`realigndel` → `realignins` → `adjustMNP`) and are functioning + non-regressing.
 
-- Local **realignment** (`VariationRealigner`: `realignins`/`realigndel`/`realignlgins`/`realignlgdel`
-  with `findMM3`/`findMM5`, `adjInsPos`, `ismatch`). This reassigns soft-clip / indel reads, performs
-  indel **left-normalization** (e.g. collapses the `chrX 44936025 C>CT` + `44936026 T>TC` pair into
-  one call), and removes the spurious SNVs it explains (e.g. one-strand homopolymer artifacts). It is
-  the largest remaining module and the main source of the extra calls. The prerequisites it needs —
-  soft-clip consensus and `adjCnt` — are now in place.
+**Not yet ported (needed for full byte-for-byte parity) — the SV / large-indel subsystem:**
+
+- **`realignlgins`/`realignlgdel`** + **`StructuralVariantsProcessor`** (`findDEL`/`findINV`/`findDUP`/
+  `findsv`, `findMatch`) + the SV-cluster detection in `CigarParser` (`prepareSVStructuresForAnalysis`,
+  discordant/split-read clustering, `isReadChimericWithSA`). This ~4 K-line subsystem reassigns
+  soft-clip-supported large indels/SVs and is what removes the remaining panel false-positives
+  (one-strand homopolymer SNVs, alignment-ambiguous insertions VarDict explains as larger events).
+  It is the deepest remaining piece.
 - Faithful **distributed coverage** at indel/MNP-dense positions (the `TCC>ACG` Depth 46 vs 35).
-- **Structural variants** (`StructuralVariantsProcessor`).
 - **Somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + Brent `zeroin`).
 
-These map 1:1 onto the remaining Java modules (see the table). The realignment engine is the bulk of
-the remaining work.
+The single-variant + small-indel pipeline (CIGAR parse → MNV/MNP → soft-clip → small-indel realign →
+call/format) is now ported and functioning; the SV/large-indel subsystem is the main remaining work.
 
 ## License
 
