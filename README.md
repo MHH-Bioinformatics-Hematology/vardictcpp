@@ -79,11 +79,16 @@ removes them). ExtraAF is derived from `extracnt`.
 - *Pileup counting* (1 Mb / 300× synthetic, matched SNV alleles): Depth exact **97.9 %** (mean abs
   diff 0.027 reads), AltDepth exact **99.7 %** (0.006 reads) — MNV growth brought AltDepth up from
   93.3 %.
-- *Default simple mode* (hg19 panel, `-f 0.01`): **7 of VarDictJava's 9 calls reproduce byte-for-byte
-  across all 36 columns**; the single-sample **SNV path is effectively at parity** (the last ±1-read
-  residual was resolved by soft-clip re-matching). The `TCC>ACG` MNP now has correct Ref/Alt/type/MSI
-  and AltDepth (Depth still differs — see coverage note). The port currently emits extra indel/edge
-  calls that VarDict's realignment reassigns or removes (below).
+- *Default simple mode* (hg19 panel, `-f 0.01`): the C++ output is now the **same 9-variant set as
+  VarDictJava with ZERO false-positives**, of which **7 of 9 reproduce byte-for-byte across all 36
+  columns**. The last false-positives were removed by matching VarDict's read filter (drop reads
+  soft-clipped at both ends, leading clip 10-99 bp + trailing clip ≥10 bp, and supplementary
+  alignments) — found with an instrumented-Java per-read CIGAR diff harness, which also disproved the
+  earlier SV/CigarModifier hypotheses. The 2 non-byte-identical rows differ only in specific
+  coverage-accounting columns: the `TCC>ACG` MNP's `Depth` (the 11 overlapping indel reads;
+  `createInsertion` attributes insertion coverage to position+1) and the `T>TC` insertion's
+  `RefFwd`/`RefRev`/`HiCov` (`createInsertion` + `calcHicov` reconciliation). Ref/Alt/Depth/AltDepth/
+  AF/MSI/genotype on both rows match.
 
 Also ports the **small-indel realignment engine** (`realigner.cpp`): `realignins`/`realigndel` with
 `findMM3`/`findMM5`, `findconseq`, `ismatch`, `joinRef`, `adjCnt`/`adjRefCnt`/`adjRefFactor`, and
