@@ -243,8 +243,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     v.meanMappingQuality += mapq;
                     v.numberOfMismatches += nm;
                     v.highQualityReadsCount++;
-                    // deletion consumes reference coverage span for depth accounting
-                    for (int i = 0; i < len; ++i) { int pp = rpos + i; if (pp >= rlo && pp <= rhi) out.refCoverage[pp]++; }
+                    // VarDict's processDeletion does NOT add reference coverage for the deleted span.
                 }
                 rpos += len;
                 break;
