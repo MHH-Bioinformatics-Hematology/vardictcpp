@@ -148,6 +148,7 @@ int main(int argc, char** argv) {
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength);
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
+        realignlgins(vd, ref, c, region, vd.maxReadLength);
         auto variants = callVariants(c, region, vd, ref);
         std::string buf;
         for (const auto& v : variants) appendVariant(buf, c, region, v);

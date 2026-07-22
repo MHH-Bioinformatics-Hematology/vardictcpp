@@ -829,4 +829,149 @@ void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const 
     }
 }
 
+// ---- realignlgins (tandem insertions / duplications from soft-clips) -----------------------------
+
+struct BaseInsertion { int bi; std::string ins; int bi2; };
+static BaseInsertion adjInsPosR(int bi, std::string ins, Reference& ref) {
+    int n = 1, len = (int)ins.size();
+    while (ref.has(bi) && ref.at(bi) == ins[ins.size() - n]) { n++; if (n > len) n = 1; bi--; }
+    if (n > 1) ins = substr(ins, 1 - n) + substr(ins, 0, 1 - n);
+    return { bi, ins, bi };
+}
+
+// VariationRealigner.findbi: slide the soft-clip consensus against the reference to detect a tandem
+// insertion (a shift where the overhang re-matches). Returns {breakpoint, inserted seq, bi2}.
+static BaseInsertion findbi(const std::string& seq, int position, Reference& ref, int dir, int chrLen) {
+    const int maxmm = 3;
+    int dirExt = dir == -1 ? 1 : 0;
+    int score = 0, bi = 0, bi2 = 0;
+    std::string ins;
+    for (int n = 6; n < (int)seq.size(); ++n) {
+        if (position + 6 >= chrLen) break;
+        int mm = 0, i = 0;
+        std::set<char> m;
+        for (i = 0; i + n < (int)seq.size(); ++i) {
+            int rp = position + dir * i - dirExt;
+            if (rp < 1 || rp > chrLen) break;
+            if (!(ref.has(rp) && seq[i + n] == ref.at(rp))) mm++;
+            else m.insert(seq[i + n]);
+            if (mm > maxmm) break;
+        }
+        int mnt = (int)m.size();
+        if (mnt < 2) continue;
+        if ((mnt >= 3 && i + n >= (int)seq.size() - 1 && i >= 8 && mm / (double)i < 0.15) ||
+            (mnt >= 2 && mm == 0 && i + n == (int)seq.size() && n >= 20 && i >= 8)) {
+            std::string insert = substr(seq, 0, n), extra;
+            int ept = 0;
+            while (n + ept + 1 < (int)seq.size() &&
+                   (!(ref.has(position + ept * dir - dirExt) && seq[n + ept] == ref.at(position + ept * dir - dirExt)) ||
+                    !(ref.has(position + (ept + 1) * dir - dirExt) && seq[n + ept + 1] == ref.at(position + (ept + 1) * dir - dirExt)))) {
+                extra += seq[n + ept]; ept++;
+            }
+            if (dir == -1) {
+                insert += extra;
+                std::reverse(insert.begin(), insert.end());
+                if (!extra.empty()) insert.insert(insert.size() - extra.size(), "&");
+                if (mm == 0 && i + n == (int)seq.size()) {
+                    bi = position - 1 - (int)extra.size(); ins = insert; bi2 = position - 1;
+                    if (extra.empty()) return adjInsPosR(bi, ins, ref);
+                    return { bi, ins, bi2 };
+                } else if (i - mm > score) { bi = position - 1 - (int)extra.size(); ins = insert; bi2 = position - 1; score = i - mm; }
+            } else {
+                int s = -1;
+                if (!extra.empty()) insert += "&" + extra;
+                else {
+                    while (s >= -n && charAt(insert, s) != (char)-1 && ref.has(position + s) && charAt(insert, s) == ref.at(position + s)) s--;
+                    if (s < -1) {
+                        std::string tins = substr(insert, s + 1, 1 - s);
+                        insert.erase(insert.size() + s + 1);
+                        insert = tins + insert;
+                    }
+                }
+                if (mm == 0 && i + n == (int)seq.size()) {
+                    bi = position + s; ins = insert; bi2 = position + s + (int)extra.size();
+                    if (extra.empty()) return adjInsPosR(bi, ins, ref);
+                    return { bi, ins, bi2 };
+                } else if (i - mm > score) { bi = position + s; ins = insert; bi2 = position + s + (int)extra.size(); score = i - mm; }
+            }
+        }
+    }
+    if (bi2 == bi && !ins.empty() && bi != 0) return adjInsPosR(bi, ins, ref);
+    return { bi, ins, bi2 };
+}
+
+void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int /*maxReadLength*/) {
+    auto& NIV = vd.nonInsertionVariants;
+    const int EXT = Config::EXTENSION;
+    auto collect = [&](std::map<int, Sclip>& clips) {
+        std::vector<std::pair<int, Sclip*>> v;
+        for (auto& [p, sc] : clips) if (p >= region.start - EXT && p <= region.end + EXT) v.push_back({p, &sc});
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) {
+            if (a.second->varsCount != b.second->varsCount) return a.second->varsCount > b.second->varsCount;
+            return a.first < b.first;
+        });
+        return v;
+    };
+    // 5' soft-clips
+    for (auto& [p, sc5vp] : collect(vd.softClips5End)) {
+        Sclip& sc5v = *sc5vp;
+        if (sc5v.varsCount < cfg.minReads) break;
+        if (sc5v.used) continue;
+        std::string seq = findconseq(sc5v);
+        if (seq.empty() || (int)seq.size() < 12) continue;
+        BaseInsertion tpl = findbi(seq, p, ref, -1, vd.chrLen);
+        int bi = tpl.bi; std::string ins = tpl.ins;
+        if (bi == 0) continue; // findMatch/DUP (SV-cluster) path gated
+        Variation& iref = vd.insertionVariants[bi]["+" + ins];
+        iref.pstd = true; iref.qstd = true;
+        adjCnt(iref, sc5v);
+        if (NIV.count(bi)) vd.refCoverage[bi] += sc5v.varsCount;
+        int len = (int)ins.size(); if (ins.find('&') != std::string::npos) len--;
+        if (!sc5v.seq.empty()) {
+            int seqLen = sc5v.seq.rbegin()->first + 1;
+            for (int ii = len + 1; ii < seqLen; ++ii) {
+                int pii = bi - ii + len;
+                auto sit = sc5v.seq.find(ii); if (sit == sc5v.seq.end()) continue;
+                for (auto& [tnt, tv] : sit->second) {
+                    Variation& tvr = getVariation(NIV, pii, std::string(1, tnt));
+                    adjCnt(tvr, *tv); tvr.pstd = true; tvr.qstd = true;
+                    vd.refCoverage[pii] += tv->varsCount;
+                }
+            }
+        }
+        sc5v.used = (bi + len != 0);
+    }
+    // 3' soft-clips
+    for (auto& [p, sc3vp] : collect(vd.softClips3End)) {
+        Sclip& sc3v = *sc3vp;
+        if (sc3v.varsCount < cfg.minReads) break;
+        if (sc3v.used) continue;
+        std::string seq = findconseq(sc3v);
+        if (seq.empty() || (int)seq.size() < 12) continue;
+        BaseInsertion tpl = findbi(seq, p, ref, 1, vd.chrLen);
+        int bi = tpl.bi; std::string ins = tpl.ins;
+        if (bi == 0) continue;
+        Variation& iref = vd.insertionVariants[bi]["+" + ins];
+        iref.pstd = true; iref.qstd = true;
+        Variation* lref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
+        double m3 = sc3v.varsCount ? sc3v.meanPosition / sc3v.varsCount : 0;
+        if (p - bi > m3) lref = nullptr;
+        adjCnt(iref, sc3v, lref);
+        int len = (int)ins.size(); if (ins.find('&') != std::string::npos) len--;
+        if (!sc3v.seq.empty()) {
+            int lenSeq = sc3v.seq.rbegin()->first + 1;
+            for (int ii = len; ii < lenSeq; ++ii) {
+                int pii = p + ii - len;
+                auto sit = sc3v.seq.find(ii); if (sit == sc3v.seq.end()) continue;
+                for (auto& [tnt, tv] : sit->second) {
+                    Variation& vref = getVariation(NIV, pii, std::string(1, tnt));
+                    adjCnt(vref, *tv); vref.pstd = true; vref.qstd = true;
+                    vd.refCoverage[pii] += tv->varsCount;
+                }
+            }
+        }
+        sc3v.used = true;
+    }
+}
+
 } // namespace vardict
