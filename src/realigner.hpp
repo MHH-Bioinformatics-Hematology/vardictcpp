@@ -16,4 +16,7 @@ void adjustMNP(VariationData& vd, Reference& ref, const Config& cfg, const Regio
 void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
+// Realign large deletions inferred from soft-clip consensus breakpoints (findbp path).
+void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+
 } // namespace vardict

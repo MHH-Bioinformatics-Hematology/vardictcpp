@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <set>
 #include <cmath>
 
 namespace vardict {
@@ -126,6 +127,47 @@ static bool ismatch(std::string seq1, std::string seq2, int dir, int MM = 3) {
         if (seq1[n] != c2) mm++;
     }
     return mm <= MM && mm / (double)seq1.size() < 0.15;
+}
+
+// VariationRealigner.rmCnt: subtract tv's tallies from vref.
+static void rmCnt(Variation& vref, const Variation& tv) {
+    vref.varsCount -= tv.varsCount;
+    vref.highQualityReadsCount -= tv.highQualityReadsCount;
+    vref.lowQualityReadsCount -= tv.lowQualityReadsCount;
+    vref.meanPosition -= tv.meanPosition;
+    vref.meanQuality -= tv.meanQuality;
+    vref.meanMappingQuality -= tv.meanMappingQuality;
+    vref.subDir(true, tv.getDir(true));
+    vref.subDir(false, tv.getDir(false));
+    correctCnt(vref);
+}
+
+// VariationRealigner.findbp: slide `sequence` against the reference within indelsize to find a
+// breakpoint where it matches with <=3 mismatches (large-indel breakpoint detection).
+static int findbp(const std::string& sequence, int startPosition, Reference& ref, int direction,
+                  int chrLen, int indelsize) {
+    const int maxmm = 3;
+    int bp = 0, score = 0;
+    int idx = chrLen;
+    for (int n = 0; n < indelsize; ++n) {
+        int mm = 0, i = 0;
+        std::set<char> m;
+        for (i = 0; i < (int)sequence.size(); ++i) {
+            int rp = startPosition + direction * n + direction * i;
+            if (rp < 1 || rp > idx) break;
+            if (ref.has(rp) && sequence[i] == ref.at(rp)) m.insert(sequence[i]);
+            else mm++;
+            if (mm > maxmm - n / 100) break;
+        }
+        if ((int)m.size() < 3) continue;
+        if (mm <= maxmm - n / 100 && i >= (int)sequence.size() - 2 && i >= 8 + n / 10 &&
+            mm / (double)i < 0.12) {
+            int lbp = startPosition + direction * n - (direction < 0 ? direction : 0);
+            if (mm == 0 && i == (int)sequence.size()) return lbp;
+            else if (i - mm > score) { bp = lbp; score = i - mm; }
+        }
+    }
+    return bp;
 }
 
 // ---- soft-clip consensus (findconseq) -----------------------------------------------------------
@@ -501,6 +543,115 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
                 adjCnt(tit->second, vit->second); pit->second.erase(vit);
             }
         }
+    }
+}
+
+// ---- realignlgdel (large deletions from soft-clip breakpoints) -----------------------------------
+// Faithful port of the findbp path of VariationRealigner.realignlgdel. The bp==0 fallback (seed-based
+// findMatch + discordant-pair SV clusters + partialPipeline on extended regions) is gated off — those
+// require the SV subsystem not yet ported. SV output markers are likewise skipped (no SV column yet).
+
+void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+    auto& NIV = vd.nonInsertionVariants;
+    const int EXT = Config::EXTENSION;
+
+    auto collectSorted = [&](std::map<int, Sclip>& clips) {
+        std::vector<std::pair<int, Sclip*>> v;
+        for (auto& [p, sc] : clips)
+            if (p >= region.start - EXT && p <= region.end + EXT) v.push_back({p, &sc});
+        std::sort(v.begin(), v.end(), [](auto& a, auto& b) {
+            if (a.second->varsCount != b.second->varsCount) return a.second->varsCount > b.second->varsCount;
+            return a.first < b.first;
+        });
+        return v;
+    };
+
+    // 5' soft-clipped reads
+    for (auto& [p, sc5vp] : collectSorted(vd.softClips5End)) {
+        Sclip& sc5v = *sc5vp;
+        int cnt = sc5v.varsCount;
+        if (cnt < cfg.minReads) break;
+        if (sc5v.used) continue;
+        std::string seq = findconseq(sc5v);
+        if (seq.empty() || (int)seq.size() < 7) continue;
+        int bp = findbp(seq, p - 5, ref, -1, vd.chrLen, cfg.indelsize);
+        if (bp == 0) continue; // seed/SV fallback not ported
+        int dellen = p - bp;
+        std::string extra;
+        std::string gt = "-" + std::to_string(dellen);
+        int en = 0;
+        while (en < (int)seq.size() && !(ref.has(bp - en - 1) && seq[en] == ref.at(bp - en - 1))) {
+            extra += seq[en]; en++;
+        }
+        if (!extra.empty()) { extra = reverseStr(extra); gt = "-" + std::to_string(dellen) + "&" + extra; bp -= (int)extra.size(); }
+        // 3' breakpoint (sc3p)
+        int n = 0;
+        if (extra.empty()) {
+            while (ref.has(bp + n) && ref.has(bp + dellen + n) && ref.at(bp + n) == ref.at(bp + dellen + n)) n++;
+        }
+        int sc3p = bp + n;
+        std::string str; int mcnt = 0;
+        while (mcnt <= 3 && ref.has(bp + n) && ref.has(bp + dellen + n) && ref.at(bp + n) != ref.at(bp + dellen + n)) {
+            str += ref.at(bp + dellen + n); n++; mcnt++;
+        }
+        if (str.size() == 1) {
+            int nm = 0;
+            while (ref.has(bp + n) && ref.has(bp + dellen + n) && ref.at(bp + n) == ref.at(bp + dellen + n)) { n++; if (n != 0) nm++; }
+            if (nm >= 3 && !vd.softClips3End.count(sc3p)) sc3p = bp + n;
+        }
+        Variation& tv = getVariation(NIV, bp, gt);
+        tv.qstd = true; tv.pstd = true;
+        adjCnt(tv, sc5v); sc5v.used = (bp != 0);
+        if (!vd.refCoverage.count(bp) && vd.refCoverage.count(p)) vd.refCoverage[bp] = vd.refCoverage[p];
+        if (dellen < cfg.indelsize) for (int tp = bp; tp < bp + dellen; ++tp) vd.refCoverage[tp] += sc5v.varsCount;
+        auto s3it = vd.softClips3End.find(sc3p);
+        if (s3it != vd.softClips3End.end() && !s3it->second.used) {
+            Sclip& sclip = s3it->second;
+            if (sc3p > bp) adjCnt(tv, sclip, ref.has(bp) ? getVariationMaybe(NIV, bp, ref.at(bp)) : nullptr);
+            else adjCnt(tv, sclip);
+            if (sc3p == bp && dellen < cfg.indelsize)
+                for (int tp = bp; tp < bp + dellen; ++tp) vd.refCoverage[tp] += sclip.varsCount;
+            for (int ip = bp + 1; ip < sc3p; ++ip) {
+                if (!ref.has(dellen + ip)) continue;
+                std::string rk(1, ref.at(dellen + ip));
+                auto pit = NIV.find(ip);
+                if (pit == NIV.end()) continue;
+                auto vit = pit->second.find(rk);
+                if (vit == pit->second.end()) continue;
+                rmCnt(vit->second, sclip);
+                if (vit->second.varsCount == 0) pit->second.erase(vit);
+                if (pit->second.empty()) NIV.erase(pit);
+            }
+            sclip.used = (bp != 0);
+        }
+    }
+
+    // 3' soft-clipped reads
+    for (auto& [p, sc3vp] : collectSorted(vd.softClips3End)) {
+        Sclip& sc3v = *sc3vp;
+        int cnt = sc3v.varsCount;
+        if (cnt < cfg.minReads) break;
+        if (sc3v.used) continue;
+        std::string seq = findconseq(sc3v);
+        if (seq.empty() || (int)seq.size() < 7) continue;
+        int bp = findbp(seq, p + 5, ref, 1, vd.chrLen, cfg.indelsize);
+        if (bp == 0) continue;
+        int dellen = bp - p;
+        std::string extra; int en = 0;
+        while (en < (int)seq.size() && !(ref.has(bp + en) && seq[en] == ref.at(bp + en))) { extra += seq[en]; en++; }
+        std::string gt = "-" + std::to_string(dellen);
+        bp = p; // set to 5'
+        if (!extra.empty()) gt = "-" + std::to_string(dellen) + "&" + extra;
+        else {
+            while (ref.has(bp - 1) && ref.has(bp + dellen - 1) && ref.at(bp - 1) == ref.at(bp + dellen - 1)) bp--;
+        }
+        Variation& tv = getVariation(NIV, bp, gt);
+        tv.qstd = true; tv.pstd = true;
+        if (dellen < cfg.indelsize)
+            for (int tp = bp; tp < bp + dellen + (int)extra.size(); ++tp) vd.refCoverage[tp] += sc3v.varsCount;
+        if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = vd.refCoverage.count(p - 1) ? vd.refCoverage[p - 1] : sc3v.varsCount;
+        sc3v.meanPosition += (double)dellen * sc3v.varsCount;
+        adjCnt(tv, sc3v); sc3v.used = true;
     }
 }
 

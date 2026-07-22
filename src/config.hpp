@@ -29,7 +29,10 @@ struct Config {
     double monomerMsiFrequency = 0.25;    // --mfreq
     double nonMonomerMsiFrequency = 0.1;  // --nmfreq
     int vext = 2;             // -X  extension for MNV/complex-variant growth
+    int indelsize = 50;       // -I  indel size / large-indel breakpoint search window
     int minMatch = 0;         // -M
+    static constexpr int EXTENSION = 5000;
+    static constexpr int SVMAXLEN = 150000;
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F
     bool doPileup = false;    // -p

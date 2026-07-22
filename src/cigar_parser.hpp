@@ -19,6 +19,7 @@ struct VariationData {
     std::map<int, Sclip> softClips5End;         // 5' soft-clip consensus per position
     std::map<int, Sclip> softClips3End;         // 3' soft-clip consensus per position
     int  maxReadLength = 0;
+    int  chrLen = 0;            // length of the region's contig (for breakpoint bounds)
     long totalReads = 0;
     long dupReads = 0;
     double duprate() const { return totalReads > 0 ? (double)dupReads / (double)(totalReads + dupReads) : 0.0; }

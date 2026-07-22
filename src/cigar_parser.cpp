@@ -62,6 +62,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
     }
     if (tid < 0) { bam_hdr_destroy(hdr); hts_idx_destroy(idx); sam_close(fp); return true; }
 
+    out.chrLen = hdr->target_len[tid];
     // Fetch reads overlapping the region (htslib is 0-based, end-exclusive).
     hts_itr_t* it = sam_itr_queryi(idx, tid, region.start - 1, region.end);
     bam1_t* b = bam_init1();
