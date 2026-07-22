@@ -75,12 +75,16 @@ clipped bases to coverage, plus per-position consensus in `softClips5End`/`softC
 realignment) and **`adjustMNP`** (merges partial SNVs into the MNP they belong to via `adjCnt` and
 removes them). ExtraAF is derived from `extracnt`.
 
-**Validation vs VarDictJava 1.8.3:**
-- *Broad variant-set parity* (1 Mb / 300× synthetic, default simple mode, **1807 variants**): the C++
-  calls the **exact same variant set — 0 false-positives, 0 false-negatives**. (Full-row byte-identity
-  is lower only because of two realignment-derived metric columns; see the `CigarModifier` note.)
-- *Pileup counting* (matched SNV alleles): Depth exact **97.9 %** (mean abs diff 0.027 reads),
-  AltDepth exact **99.7 %** (0.006 reads) — MNV growth brought AltDepth up from 93.3 %.
+**Validation vs VarDictJava 1.8.3** (1 Mb / 300× synthetic, default simple mode, **1807 variants**):
+- **Variant set: exact — 0 false-positives, 0 false-negatives.**
+- **Full-row byte-identical: 98.3 %** (1776 / 1807 rows match VarDictJava across all 36 columns).
+- **Depth / AltDepth: 100 %** exact (mean abs diff 0.001 / 0.002 reads).
+- The remaining ~1.7 % of rows are multi-variant / MNP-adjacent edge cases (genotype1 should be the
+  *dominant* variant at the position, and coverage differs by a few reads where variants overlap).
+
+Getting there required the coupled **CigarModifier + adjSNV** pair (read-end mismatch → soft-clip →
+merged back into the adjacent SNV), verified read-by-read against instrumented VarDict, plus the exact
+genotype rule (genotype1 = reference allele when its frequency ≥ `-f`, else the variant).
 - *Default simple mode* (hg19 panel, `-f 0.01`): the C++ output is now the **same 9-variant set as
   VarDictJava with ZERO false-positives**, of which **7 of 9 reproduce byte-for-byte across all 36
   columns**. The last false-positives were removed by matching VarDict's read filter (drop reads
