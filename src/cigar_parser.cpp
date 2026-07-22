@@ -78,6 +78,17 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         if (cfg_.samFilterFlag != 0 && (c.flag & cfg_.samFilterFlag)) continue;
         if ((double)c.qual < cfg_.mapqMin) continue;
         if (c.n_cigar == 0 || c.l_qseq == 0) continue;
+        // Ignore supplementary alignments (they would skew coverage), as VarDict does.
+        if (c.flag & BAM_FSUPPLEMENTARY) continue;
+        // Ignore reads soft-clipped at both ends where the leading clip is 10-99 bp and the trailing
+        // clip is >= 10 bp (VarDict pattern ^\d\dS.*\d\dS$ on the CIGAR: two-digit leading S, >=2-digit
+        // trailing S). These are chimeric/mis-mapped islands VarDict does not count.
+        {
+            const uint32_t* cg0 = bam_get_cigar(b);
+            int lead = (bam_cigar_op(cg0[0]) == BAM_CSOFT_CLIP) ? (int)bam_cigar_oplen(cg0[0]) : 0;
+            int tail = (bam_cigar_op(cg0[c.n_cigar - 1]) == BAM_CSOFT_CLIP) ? (int)bam_cigar_oplen(cg0[c.n_cigar - 1]) : 0;
+            if (lead >= 10 && lead <= 99 && tail >= 10) continue;
+        }
 
         bool reverse = (c.flag & BAM_FREVERSE) != 0;
         int mapq = c.qual;
