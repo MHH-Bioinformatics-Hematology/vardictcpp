@@ -94,9 +94,19 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         bool reverse = (c.flag & BAM_FREVERSE) != 0;
         int mapq = c.qual;
 
-        // NM tag (edit distance) if present.
+        // NM tag (edit distance) if present. VarDict (CigarParser) subtracts the total I+D length
+        // of the ORIGINAL cigar so per-variation NM counts mismatches only, not the indel gaps
+        // ("Edit distance - indels is the # of mismatches"). Computed before modifyCigar.
         double nm = 0;
-        if (uint8_t* aux = bam_aux_get(b, "NM")) nm = (double)bam_aux2i(aux);
+        if (uint8_t* aux = bam_aux_get(b, "NM")) {
+            long insDelLen = 0;
+            const uint32_t* nmcig = bam_get_cigar(b);
+            for (uint32_t k = 0; k < c.n_cigar; ++k) {
+                int op = bam_cigar_op(nmcig[k]);
+                if (op == BAM_CINS || op == BAM_CDEL) insDelLen += bam_cigar_oplen(nmcig[k]);
+            }
+            nm = (double)bam_aux2i(aux) - (double)insDelLen;
+        }
 
         out.totalReads++;
         if (c.l_qseq > out.maxReadLength) out.maxReadLength = c.l_qseq;

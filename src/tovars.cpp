@@ -71,11 +71,19 @@ static MSIResult findMSI(const std::string& tseq1, const std::string& tseq2, con
     return { msicnt, shift3, (int)maxmsi.size() };
 }
 
+// Port of Variant.varType() (classify by realized ref/alt alleles, not the raw description).
 static std::string classifyType(const std::string& ref, const std::string& alt) {
-    if (alt.size() == 1 && ref.size() == 1) return "SNV";
-    if (!alt.empty() && alt[0] == '+') return "Insertion";
-    if (!alt.empty() && alt[0] == '-') return "Deletion";
-    if (ref.size() == alt.size()) return alt.size() == 1 ? "SNV" : "Complex";
+    if (ref == alt && ref.size() == 1) return "";
+    if (ref.size() == 1 && alt.size() == 1) return "SNV";
+    if (!alt.empty() && (alt.front() == '<' || alt[0] == '+' || alt[0] == '-')) {
+        if (alt[0] == '+') return "Insertion";
+        if (alt[0] == '-') return "Deletion";
+        return alt; // <DEL>/<DUP>/<INV>
+    }
+    if (ref.empty() || alt.empty()) return "Complex";
+    if (ref[0] != alt[0]) return "Complex";
+    if (ref.size() == 1 && alt.size() > 1 && alt.compare(0, ref.size(), ref) == 0) return "Insertion";
+    if (ref.size() > 1 && alt.size() == 1 && ref.compare(0, alt.size(), alt) == 0) return "Deletion";
     return "Complex";
 }
 
@@ -153,11 +161,29 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.varallele = std::string(1, refBase) + allele.substr(1);
             } else if (allele[0] == '-') {             // deletion signature "-N"
                 int dl = std::stoi(allele.substr(1));
+                // VarDict (ToVarsBuilder) anchors a deletion one base 5' of `position`:
+                //   varallele = ref[position-1];  refallele = ref[position-1] + ref[position..position+dl-1]
+                //   startPosition-- ; endPosition = position + dl - 1.
+                char anchor = ref.has(position - 1) ? ref.at(position - 1) : refBase;
                 std::string delseq;
-                for (int i = 0; i < dl; ++i) delseq += ref.at(position + i);
-                var.refallele = std::string(1, refBase) + delseq;
-                var.varallele = std::string(1, refBase);
-                var.endPosition = position + dl;
+                for (int i = 0; i < dl; ++i) if (ref.has(position + i)) delseq += ref.at(position + i);
+                var.varallele = std::string(1, anchor);
+                var.refallele = std::string(1, anchor) + delseq;
+                var.startPosition = position - 1;
+                var.endPosition = position + dl - 1;
+                // proceedVrefIsDeletion: MSI over deleted unit vs flanks (leftseq = ref[p-70..p-1],
+                // tseq = ref[p..p+dl+70]; findMSI(tseq[0..dl), tseq[dl..], leftseq) vs without-left).
+                std::string leftseq, tseq;
+                for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
+                for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
+                std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
+                std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
+                MSIResult m = findMSI(t1, t2, leftseq);
+                MSIResult m2 = findMSI(leftseq, t2);
+                double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
+                if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; } // shift3 unchanged
+                if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
+                var.msi = msi; var.shift3 = shift3; var.msint = msint;
             } else {                                    // SNV
                 var.refallele = std::string(1, refBase);
                 var.varallele = allele;
@@ -169,17 +195,29 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
             }
             var.vartype = classifyType(var.refallele, var.varallele);
-            // genotype1 = reference allele if it is present at >= freq, else the variant allele
-            // (ToVarsBuilder.collectReferenceVariants); genotype2 = the variant allele.
+            // VarDict genotype = genotype1 + "/" + genotype2 (ToVarsBuilder). genotype1 is the
+            // *description string* of the reference base (when ref freq >= -f) else the dominant
+            // variant; genotype2 is THIS allele's raw description: SNV -> base, deletion -> "-N",
+            // MNV -> allele with '&' stripped. Then '&'/'#' removed and '^' -> 'i'.
             {
+                auto rawDesc = [&](const std::string& a) -> std::string {
+                    if (!a.empty() && a[0] == '+') return "+" + std::to_string((int)a.size() - 1);
+                    if (!a.empty() && a[0] == '-') return a;           // deletion "-N"
+                    std::string s; for (char ch : a) if (ch != '&') s += ch; // MNV/SNV
+                    return s;
+                };
                 double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
-                std::string g1 = (refFreq >= freq) ? var.refallele : var.varallele;
-                var.genotype = g1 + "/" + var.varallele;
+                std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : rawDesc(allele);
+                std::string g2 = rawDesc(allele);
+                std::string genotype = g1 + "/" + g2;
+                std::string cleaned;
+                for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
+                var.genotype = cleaned;
             }
 
             // Reference-context flanks: 20 bp windows (ToVarsBuilder REF_20_BASES).
-            for (int i = 20; i >= 1; --i) if (position - i >= 1) var.leftseq += ref.at(position - i);
-            for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(var.endPosition + i);
+            for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
+            for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
 
             if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
             result.push_back(std::move(var));
@@ -235,7 +273,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                            : (double)v.highQualityReadsCount / 0.5;
                 var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads))
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads));
-                for (int i = 20; i >= 1; --i) if (position - i >= 1) var.leftseq += ref.at(position - i);
+                for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(position + i);
                 if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
                 result.push_back(std::move(var));

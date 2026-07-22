@@ -127,6 +127,22 @@ This includes `findbp`, `findbi`, `find35match`, the reference **k-mer seed inde
 `findconseq` (with the `B_A7`/`B_T7` poly-A/T guard), and the soft-clip-consensus / mismatch
 reassignment that removes indel-explained SNVs. Reference is loaded with VarDict's ±1200 window.
 
+**Deletion output now matches VarDict exactly** (`ToVarsBuilder` + `proceedVrefIsDeletion`): a
+deletion is anchored one base 5′ of its stored position (`refallele = ref[p-1] + deleted bases`,
+`varallele = ref[p-1]`, `startPosition--`), gets its microsatellite `msi`/`shift3`/`msint` from the
+deleted-unit-vs-flank comparison, the `genotype1/-N` genotype form, and `Deletion` classification via
+a full `varType()` port. Per-read `NM` is `edit_distance − (I+D length)` so indel gaps aren't counted
+as mismatches. On the deduplicated MRD data this makes deletion rows byte-identical to VarDict on
+30 of 32 columns (only the indel-position `Depth`/`AF` distributed-coverage accounting differs) and
+eliminates every prior deletion false-negative.
+
+**Validation on UMI-deduplicated MRD data** (the caller's real production input, 12 samples,
+`bench/results_dedup.md`): **10 of 12 samples exact** (0 FP/FN, byte-identical); **0
+false-negatives across all 12**; **2 total false-positives**, both the single documented
+`CigarModifier` gap below. Performance vs VarDictJava: **peak RSS 39× lower on average / 91× at
+peak** (2.57 GB → 0.028 GB on a repeat-dense sample) and **wall-clock 13× faster on average / 16× on
+the slowest sample** (230 s → 14.4 s).
+
 **Not yet ported — `CigarModifier` (the precise cause of the remaining false-positives):**
 
 Diagnosed to ground truth: the remaining panel FPs are reads whose CIGAR VarDict **rewrites before
