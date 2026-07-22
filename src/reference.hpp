@@ -1,5 +1,7 @@
 #pragma once
 #include <string>
+#include <unordered_map>
+#include <vector>
 #include <htslib/faidx.h>
 
 namespace vardict {
@@ -26,10 +28,21 @@ public:
     int loadedStart() const { return loadedStart_; }
     int loadedEnd() const { return loadedStart_ + (int)seq_.size() - 1; }
 
+    // k-mer -> reference positions (SEED_1=17 and SEED_2=12), built over the loaded window.
+    // Mirrors ReferenceResource.addPositionsToSeedSequence; used by findMatch for SV breakpoints.
+    const std::vector<int>* seedPositions(const std::string& kmer) const {
+        auto it = seed_.find(kmer);
+        return it == seed_.end() ? nullptr : &it->second;
+    }
+    static constexpr int SEED_1 = 17;
+    static constexpr int SEED_2 = 12;
+
 private:
+    void buildSeed();
     faidx_t* fai_ = nullptr;
     std::string seq_;
     int loadedStart_ = 1;
+    std::unordered_map<std::string, std::vector<int>> seed_;
 };
 
 } // namespace vardict

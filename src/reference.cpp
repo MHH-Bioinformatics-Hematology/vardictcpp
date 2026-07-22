@@ -33,6 +33,16 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
     for (auto& c : seq_) c = (char)std::toupper((unsigned char)c);
     loadedStart_ = s;
     free(raw);
+    buildSeed();
+}
+
+void Reference::buildSeed() {
+    seed_.clear();
+    int n = (int)seq_.size();
+    for (int i = 0; i + SEED_1 <= n; ++i)
+        seed_[seq_.substr(i, SEED_1)].push_back(i + loadedStart_);
+    for (int i = 0; i + SEED_2 <= n; ++i)
+        seed_[seq_.substr(i, SEED_2)].push_back(i + loadedStart_);
 }
 
 } // namespace vardict

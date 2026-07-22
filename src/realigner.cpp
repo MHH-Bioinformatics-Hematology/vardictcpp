@@ -170,6 +170,43 @@ static int findbp(const std::string& sequence, int startPosition, Reference& ref
     return bp;
 }
 
+// VariationRealigner.ismatchref: does `sequence` match the reference at `position` (stepping by dir)
+// with <=MM mismatches and <15% mismatch fraction?
+static bool ismatchref(const std::string& sequence, Reference& ref, int position, int dir, int MM = 3) {
+    int mm = 0;
+    for (int n = 0; n < (int)sequence.size(); ++n) {
+        int rp = position + dir * n;
+        if (!ref.has(rp)) return false;
+        char sc = charAt(sequence, dir == 1 ? n : dir * n - 1);
+        if (sc != ref.at(rp)) mm++;
+    }
+    return mm <= MM && mm / (double)sequence.size() < 0.15;
+}
+
+// StructuralVariantsProcessor.findMatch: seed-lookup the soft-clip consensus in the reference to
+// locate a breakpoint elsewhere in the loaded window (used when findbp fails). Returns {bp, extra}.
+struct Match { int bp; std::string extra; };
+static Match findMatch(std::string seq, Reference& ref, int /*position*/, int dir, int SEED, int MM) {
+    if (dir == -1) seq = reverseStr(seq);
+    std::string extra;
+    for (int i = (int)seq.size() - SEED; i >= 0; --i) {
+        std::string kmer = substr(seq, i, SEED);
+        const std::vector<int>* seeds = ref.seedPositions(kmer);
+        if (!seeds || seeds->size() != 1) continue;
+        int firstSeed = (*seeds)[0];
+        int bp = dir == 1 ? firstSeed - i : firstSeed + (int)seq.size() - i - 1;
+        if (ismatchref(seq, ref, bp, dir, MM)) {
+            int mm = dir == -1 ? -1 : 0;
+            while (ref.has(bp) && charAt(seq, mm) != (char)-1 && ref.at(bp) != charAt(seq, mm)) {
+                extra += substr(seq, mm, 1); bp += dir; mm += dir;
+            }
+            if (!extra.empty() && dir == -1) extra = reverseStr(extra);
+            return { bp, extra };
+        }
+    }
+    return { 0, "" };
+}
+
 // ---- soft-clip consensus (findconseq) -----------------------------------------------------------
 
 static std::string findconseq(Sclip& sc) {
@@ -206,7 +243,11 @@ static std::string findconseq(Sclip& sc) {
         (seq.size() / (double)ntSize > 0.8 || ntSize - (int)seq.size() < 10 || seq.size() > 25)) {
         SEQ = seq;
     }
-    if (!SEQ.empty() && islowcomplexseq(SEQ)) sc.used = true;
+    if (!SEQ.empty() && (int)SEQ.size() > Reference::SEED_2) {
+        // B_A7 = ^.AAAAAAA, B_T7 = ^.TTTTTTT: poly-A/T runs near the clip start -> unusable consensus.
+        if (SEQ.size() >= 8 && (SEQ.substr(1, 7) == "AAAAAAA" || SEQ.substr(1, 7) == "TTTTTTT")) sc.used = true;
+        if (islowcomplexseq(SEQ)) sc.used = true;
+    }
     sc.sequence = SEQ;
     return SEQ;
 }
@@ -575,18 +616,32 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
         std::string seq = findconseq(sc5v);
         if (seq.empty() || (int)seq.size() < 7) continue;
         int bp = findbp(seq, p - 5, ref, -1, vd.chrLen, cfg.indelsize);
-        if (bp == 0) continue; // seed/SV fallback not ported
+        std::string EXTRA;
+        if (bp == 0) {   // findbp failed: try seed-based findMatch (SV-cluster / partialPipeline gated)
+            if (islowcomplexseq(seq)) continue;
+            Match match = findMatch(seq, ref, p, -1, Reference::SEED_1, 1);
+            bp = match.bp; EXTRA = match.extra;
+            if (!(bp != 0 && p - bp > 15 && p - bp < Config::SVMAXLEN)) continue;
+            bp++;
+            if (cnt <= cfg.minReads) continue; // svcov==0 path (no discordant-pair support)
+        }
         int dellen = p - bp;
         std::string extra;
         std::string gt = "-" + std::to_string(dellen);
-        int en = 0;
-        while (en < (int)seq.size() && !(ref.has(bp - en - 1) && seq[en] == ref.at(bp - en - 1))) {
-            extra += seq[en]; en++;
+        if (EXTRA.empty()) {
+            int en = 0;
+            while (en < (int)seq.size() && !(ref.has(bp - en - 1) && seq[en] == ref.at(bp - en - 1))) {
+                extra += seq[en]; en++;
+            }
+            if (!extra.empty()) { extra = reverseStr(extra); gt = "-" + std::to_string(dellen) + "&" + extra; bp -= (int)extra.size(); }
+        } else {
+            dellen -= (int)EXTRA.size();
+            gt = dellen == 0 ? "-" + std::to_string((int)EXTRA.size()) + "^" + EXTRA
+                             : "-" + std::to_string(dellen) + "&" + EXTRA;
         }
-        if (!extra.empty()) { extra = reverseStr(extra); gt = "-" + std::to_string(dellen) + "&" + extra; bp -= (int)extra.size(); }
         // 3' breakpoint (sc3p)
         int n = 0;
-        if (extra.empty()) {
+        if (extra.empty() && EXTRA.empty()) {
             while (ref.has(bp + n) && ref.has(bp + dellen + n) && ref.at(bp + n) == ref.at(bp + dellen + n)) n++;
         }
         int sc3p = bp + n;
@@ -635,13 +690,22 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
         std::string seq = findconseq(sc3v);
         if (seq.empty() || (int)seq.size() < 7) continue;
         int bp = findbp(seq, p + 5, ref, 1, vd.chrLen, cfg.indelsize);
-        if (bp == 0) continue;
+        std::string EXTRA;
+        if (bp == 0) {
+            if (islowcomplexseq(seq)) continue;
+            Match match = findMatch(seq, ref, p, 1, Reference::SEED_1, 1);
+            bp = match.bp; EXTRA = match.extra;
+            if (!(bp != 0 && bp - p > 15)) continue;
+            if (cnt <= cfg.minReads) continue;
+        }
         int dellen = bp - p;
-        std::string extra; int en = 0;
-        while (en < (int)seq.size() && !(ref.has(bp + en) && seq[en] == ref.at(bp + en))) { extra += seq[en]; en++; }
+        std::string extra;
+        if (!EXTRA.empty()) dellen -= (int)EXTRA.size();
+        else { int en = 0; while (en < (int)seq.size() && !(ref.has(bp + en) && seq[en] == ref.at(bp + en))) { extra += seq[en]; en++; } }
         std::string gt = "-" + std::to_string(dellen);
         bp = p; // set to 5'
         if (!extra.empty()) gt = "-" + std::to_string(dellen) + "&" + extra;
+        else if (!EXTRA.empty()) gt = "-" + std::to_string(dellen) + "&" + EXTRA;
         else {
             while (ref.has(bp - 1) && ref.has(bp + dellen - 1) && ref.at(bp - 1) == ref.at(bp + dellen - 1)) bp--;
         }

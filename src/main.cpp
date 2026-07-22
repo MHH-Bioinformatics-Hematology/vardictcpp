@@ -136,7 +136,9 @@ int main(int argc, char** argv) {
     // it is safe to run concurrently (htslib faidx/BAM handles are not shared across threads). vd is
     // released at the end of the call, so per-region memory never accumulates.
     auto processRegion = [&](const Region& region, Reference& ref) {
-        ref.load(region.chr, region.start, region.end, 20 + c.numberNucleotideToExtend);
+        // VarDict loads reference with numberNucleotideToExtend + referenceExtension(1200) padding;
+        // realignment flanks + the seed index for findMatch need this wider window.
+        ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
         VariationData vd;
         CigarParser(c, ref).process(region, vd);
         // Realignment order mirrors VariationRealigner: adjustMNP, then realigndel, realignins,
@@ -145,9 +147,7 @@ int main(int argc, char** argv) {
         realigndel(vd, ref, c, region, vd.maxReadLength);
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength);
-        // realignlgins30: ported (see realigner.cpp) but not yet enabled — without VarDict's adaptor
-        // filtering in findconseq and the inner realignins/realigndel re-calls it can synthesize a
-        // spurious large insertion from adapter-contaminated soft-clip pairs. Enable once those land.
+        realignlgins30(vd, ref, c, region, vd.maxReadLength);
         auto variants = callVariants(c, region, vd, ref);
         std::string buf;
         for (const auto& v : variants) appendVariant(buf, c, region, v);
