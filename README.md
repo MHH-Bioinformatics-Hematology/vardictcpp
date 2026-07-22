@@ -44,6 +44,25 @@ interval length (identical mechanism to the `--chunk` flag added to VarDictJava 
 output (mirrors VarDictJava's parallel mode); output is bit-identical to single-threaded. On the
 698-region hg19 panel at 8 threads: **0.52 s / 0.05 GB** vs VarDictJava **1.88 s / 1.47 GB**.
 
+
+## CLI compatibility
+
+vardictcpp accepts **VarDictJava 1.8.3's complete option set** (62 options) with the same
+commons-cli syntax, including single-dash multi-char options (`-th 8`, `-VS STRICT`, `-DP`, `-mfreq`).
+Options that drive the single-sample pipeline are acted on; the rest are parsed (VarDict-compatible)
+even where not yet wired. Unsupported *modes* refuse cleanly instead of mis-calling: `-a/--amplicon`,
+`--fisher`, and somatic (two BAMs `-b 't|n'`).
+
+## Testing
+
+- **vardictcpp:** `bash test/run_tests.sh` — runs against a self-contained fixture (20 kb reference +
+  ~26k simulated reads, `test/data/`) and asserts parity with a golden output from stock VarDictJava:
+  variant set identical (0 FP/FN), Depth/AltDepth exact, byte-identity ≥ 95%. Currently **PASS** (100%
+  byte-identical on the fixture).
+- **VarDictJava (the memory branch):** all **92** integration test cases pass — run via the standalone
+  `IntegrationRunner` (the gradle/TestNG path is offline-blocked here), confirming the memory changes
+  are byte-identical to stock.
+
 ## Architecture (mirrors the Java package layout)
 
 | C++ file | Ports from (VarDictJava) | Purpose |
