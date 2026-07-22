@@ -45,16 +45,17 @@ static bool isGoodVar(const Config& c, const Variant& v, int refHicnt, double re
 // ref window. Returns {msi count, shift3, microsatellite-unit length}. Repeat counting is done
 // directly (alleles are ACGTN) rather than via regex, matching ((unit)+)$ on tseq1 and ^((unit)+) on tseq2.
 struct MSIResult { double msi; int shift3; int msintLen; };
-static MSIResult findMSI(const std::string& tseq1, const std::string& tseq2) {
+static MSIResult findMSI(const std::string& tseq1, const std::string& tseq2, const std::string& left = "") {
     int nmsi = 1;
     double msicnt = 0;
     std::string maxmsi;
     while (nmsi <= (int)tseq1.size() && nmsi <= 6) {
         std::string unit = tseq1.substr(tseq1.size() - nmsi); // substr(tseq1, -nmsi)
-        // trailing repeats of `unit` in tseq1
+        // trailing repeats of `unit`; when `left` is given, count over (left + tseq1) as VarDict does.
+        std::string b = left.empty() ? tseq1 : (left + tseq1);
         int t1 = 0;
-        while ((int)tseq1.size() - (t1 + 1) * nmsi >= 0 &&
-               tseq1.compare(tseq1.size() - (t1 + 1) * nmsi, nmsi, unit) == 0) t1++;
+        while ((int)b.size() - (t1 + 1) * nmsi >= 0 &&
+               b.compare(b.size() - (t1 + 1) * nmsi, nmsi, unit) == 0) t1++;
         double curmsi = (double)(t1 * nmsi) / nmsi;
         // leading repeats of `unit` in tseq2
         int t2 = 0;
@@ -201,8 +202,25 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.refallele = std::string(1, refBase);
                 var.varallele = std::string(1, refBase) + allele.substr(1);
                 var.vartype = "Insertion";
-                var.genotype = var.refallele + "/" + var.varallele;
+                // VarDict genotype2 for an insertion is "+<length>" (createInsertion), e.g. T/+1.
+                var.genotype = var.refallele + "/+" + std::to_string((int)allele.size() - 1);
+                var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
                 var.duprate = vd.duprate();
+                // MSI for insertion (ToVarsBuilder.proceedVrefIsInsertion): tseq1 = inserted bases,
+                // leftseq = ref[p-50..p], tseq2 = ref[p+1..p+70]; take max(with-left, without-left) and
+                // a shift3/len floor.
+                {
+                    std::string ins = allele.substr(1);
+                    std::string leftseq, tseq2;
+                    for (int q = position - 50; q <= position; ++q) if (q >= 1) leftseq += ref.at(q);
+                    for (int q = position + 1; q <= position + 70; ++q) tseq2 += ref.at(q);
+                    MSIResult m = findMSI(ins, tseq2, leftseq);
+                    MSIResult m2 = findMSI(leftseq, tseq2);
+                    double msi = m.msi; int msint = m.msintLen;
+                    if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
+                    if (!ins.empty() && msi <= m.shift3 / (double)ins.size()) msi = m.shift3 / (double)ins.size();
+                    var.msi = msi; var.shift3 = m.shift3; var.msint = msint;
+                }
                 var.qratio = v.lowQualityReadsCount > 0
                            ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                            : (double)v.highQualityReadsCount / 0.5;
