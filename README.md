@@ -70,29 +70,35 @@ per-region memory release.
 Includes VarDict's **MNV growth** (adjacent mismatches, bridging up to `vext` matching bases, grown
 into one `&`-joined description string, e.g. `A&CG` → `TCC>ACG` Complex) and the MNP `mnp` map.
 
+Now also ports: **soft-clip processing** (mis-softclip re-matching that converts reference-matching
+clipped bases to coverage, plus per-position consensus in `softClips5End`/`softClips3End` for
+realignment) and **`adjustMNP`** (merges partial SNVs into the MNP they belong to via `adjCnt` and
+removes them). ExtraAF is derived from `extracnt`.
+
 **Validation vs VarDictJava 1.8.3:**
 - *Pileup counting* (1 Mb / 300× synthetic, matched SNV alleles): Depth exact **97.9 %** (mean abs
   diff 0.027 reads), AltDepth exact **99.7 %** (0.006 reads) — MNV growth brought AltDepth up from
   93.3 %.
 - *Default simple mode* (hg19 panel, `-f 0.01`): **7 of VarDictJava's 9 calls reproduce byte-for-byte
-  across all 36 columns** (counts, AF, PMean/QMean, MSI, flanks, Seg, Duprate), including the
-  `TCC>ACG` MNP's structure and MSI. The remaining 3 differences are all in the realignment layer.
+  across all 36 columns**; the single-sample **SNV path is effectively at parity** (the last ±1-read
+  residual was resolved by soft-clip re-matching). The `TCC>ACG` MNP now has correct Ref/Alt/type/MSI
+  and AltDepth (Depth still differs — see coverage note). The port currently emits extra indel/edge
+  calls that VarDict's realignment reassigns or removes (below).
 
-**Not yet ported (needed for full byte-for-byte parity) — an interconnected core:**
+**Not yet ported (needed for full byte-for-byte parity) — the realignment engine:**
 
-- **Soft-clip consensus** tracking in `CigarParser` (`softClips5End`/`softClips3End`, `findconseq`).
-  Currently soft-clips only advance the query cursor; realignment consumes their consensus, so this
-  is a prerequisite for the items below.
-- **`adjustMNP`** + the faithful *distributed* coverage model — reconciles MNP counts/coverage with
-  the partial SNVs they subsume (the `TCC>ACG` row's Depth/AltDepth still differ for this reason).
-- Local **realignment** (`VariationRealigner`: realigndel/ins/lgdel/lgins, `adjCnt`, `adjInsPos`) —
-  indel left-normalization; explains the remaining panel insertion (`chrX ... T>TC`).
-- The last ±1-read SNV residual (VarDict's insertion-edge count adjustment in the matching increment).
+- Local **realignment** (`VariationRealigner`: `realignins`/`realigndel`/`realignlgins`/`realignlgdel`
+  with `findMM3`/`findMM5`, `adjInsPos`, `ismatch`). This reassigns soft-clip / indel reads, performs
+  indel **left-normalization** (e.g. collapses the `chrX 44936025 C>CT` + `44936026 T>TC` pair into
+  one call), and removes the spurious SNVs it explains (e.g. one-strand homopolymer artifacts). It is
+  the largest remaining module and the main source of the extra calls. The prerequisites it needs —
+  soft-clip consensus and `adjCnt` — are now in place.
+- Faithful **distributed coverage** at indel/MNP-dense positions (the `TCC>ACG` Depth 46 vs 35).
 - **Structural variants** (`StructuralVariantsProcessor`).
 - **Somatic** (paired) and **amplicon** modes; `--fisher` (hypergeometric + Brent `zeroin`).
 
-These map 1:1 onto the remaining Java modules (see the table) and are the roadmap to full parity.
-The soft-clip → realignment → adjustMNP chain is tightly coupled and is the bulk of the remaining work.
+These map 1:1 onto the remaining Java modules (see the table). The realignment engine is the bulk of
+the remaining work.
 
 ## License
 
