@@ -2,3 +2,6 @@ build/
 *.o
 *.tsv
 compile_commands.json
+
+# keep committed golden test outputs
+!test/data/golden.simple.tsv
