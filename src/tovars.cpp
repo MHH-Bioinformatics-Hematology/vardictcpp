@@ -169,9 +169,13 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
             }
             var.vartype = classifyType(var.refallele, var.varallele);
-            var.genotype = var.frequency < 0.5
-                         ? var.refallele + "/" + var.varallele
-                         : var.varallele + "/" + var.varallele;
+            // genotype1 = reference allele if it is present at >= freq, else the variant allele
+            // (ToVarsBuilder.collectReferenceVariants); genotype2 = the variant allele.
+            {
+                double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+                std::string g1 = (refFreq >= freq) ? var.refallele : var.varallele;
+                var.genotype = g1 + "/" + var.varallele;
+            }
 
             // Reference-context flanks: 20 bp windows (ToVarsBuilder REF_20_BASES).
             for (int i = 20; i >= 1; --i) if (position - i >= 1) var.leftseq += ref.at(position - i);
@@ -202,8 +206,13 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.refallele = std::string(1, refBase);
                 var.varallele = std::string(1, refBase) + allele.substr(1);
                 var.vartype = "Insertion";
-                // VarDict genotype2 for an insertion is "+<length>" (createInsertion), e.g. T/+1.
-                var.genotype = var.refallele + "/+" + std::to_string((int)allele.size() - 1);
+                // genotype2 for an insertion is "+<length>" (e.g. T/+1); genotype1 = ref allele if present.
+                {
+                    double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+                    std::string g2 = "+" + std::to_string((int)allele.size() - 1);
+                    std::string g1 = (refFreq >= freq) ? var.refallele : g2;
+                    var.genotype = g1 + "/" + g2;
+                }
                 var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
                 var.duprate = vd.duprate();
                 // MSI for insertion (ToVarsBuilder.proceedVrefIsInsertion): tseq1 = inserted bases,
