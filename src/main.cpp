@@ -124,6 +124,7 @@ int main(int argc, char** argv) {
     c.readPosFilter = std::atoi(val("P", "5").c_str());
     c.qratio = std::atof(val("o", "1.5").c_str());
     c.vext = std::atoi(val("X", "2").c_str());
+    c.mismatch = std::atoi(val("m", "8").c_str());
     c.indelsize = std::atoi(val("I", "50").c_str());
     c.SVMINLEN = std::atoi(val("L", "1000").c_str());
     c.monomerMsiFrequency = std::atof(val("mfreq", "0.25").c_str());

@@ -98,6 +98,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         // of the ORIGINAL cigar so per-variation NM counts mismatches only, not the indel gaps
         // ("Edit distance - indels is the # of mismatches"). Computed before modifyCigar.
         double nm = 0;
+        bool haveNM = false;
         if (uint8_t* aux = bam_aux_get(b, "NM")) {
             long insDelLen = 0;
             const uint32_t* nmcig = bam_get_cigar(b);
@@ -106,7 +107,11 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 if (op == BAM_CINS || op == BAM_CDEL) insDelLen += bam_cigar_oplen(nmcig[k]);
             }
             nm = (double)bam_aux2i(aux) - (double)insDelLen;
+            haveNM = true;
         }
+        // VarDict (CigarParser): "reads with mismatches more than INT will be filtered and ignored"
+        // (gaps not counted). Skip the whole read when NM - indels exceeds -m (default 8).
+        if (haveNM && nm > cfg_.mismatch) continue;
 
         out.totalReads++;
         if (c.l_qseq > out.maxReadLength) out.maxReadLength = c.l_qseq;

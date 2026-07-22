@@ -29,6 +29,7 @@ struct Config {
     double monomerMsiFrequency = 0.25;    // --mfreq
     double nonMonomerMsiFrequency = 0.1;  // --nmfreq
     int vext = 2;             // -X  extension for MNV/complex-variant growth
+    int mismatch = 8;         // -m  skip a read whose (NM - indel length) exceeds this (default 8)
     int indelsize = 50;       // -I  indel size / large-indel breakpoint search window
     int minMatch = 0;         // -M
     int SVMINLEN = 1000;      // -L  minimum SV length to spell as <DUP>/<INV>/<DEL>
