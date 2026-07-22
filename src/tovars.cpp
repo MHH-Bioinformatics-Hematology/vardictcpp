@@ -125,6 +125,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             var.hicnt = v.highQualityReadsCount;
             var.hicov = hicov;
             var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
+            var.extrafreq = (v.extracnt != 0 && totalCov > 0) ? (double)v.extracnt / totalCov : 0;
             var.qratio = v.lowQualityReadsCount > 0
                        ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                        : (double)v.highQualityReadsCount / 0.5; // hi/lo signal-to-noise

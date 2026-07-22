@@ -25,6 +25,7 @@ add_executable(vardictcpp
   src/reference.cpp
   src/cigar_parser.cpp
   src/tovars.cpp
+  src/realigner.cpp
   src/printer.cpp
 )
 find_package(Threads REQUIRED)

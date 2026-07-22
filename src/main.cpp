@@ -16,6 +16,7 @@
 #include "region.hpp"
 #include "reference.hpp"
 #include "cigar_parser.hpp"
+#include "realigner.hpp"
 #include "tovars.hpp"
 #include "printer.hpp"
 
@@ -138,6 +139,7 @@ int main(int argc, char** argv) {
         ref.load(region.chr, region.start, region.end, 20 + c.numberNucleotideToExtend);
         VariationData vd;
         CigarParser(c, ref).process(region, vd);
+        adjustMNP(vd, ref, c, region);
         auto variants = callVariants(c, region, vd, ref);
         std::string buf;
         for (const auto& v : variants) appendVariant(buf, c, region, v);
