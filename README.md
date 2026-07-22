@@ -33,13 +33,16 @@ cmake --build build -j
 
 ```bash
 vardictcpp -G ref.fa -b in.bam -N sample -R chr:start-end -f 0.01
-vardictcpp -G ref.fa -b in.bam -N sample -c 1 -S 2 -E 3 -g 4 panel.bed -f 0
+vardictcpp -G ref.fa -b in.bam -N sample -c 1 -S 2 -E 3 -g 4 panel.bed -f 0 --th 8
 vardictcpp -G ref.fa -b in.bam -N sample -R chr:1-1000000 --chunk 50000   # bound memory
 ```
 
 Output is VarDict simple-mode TSV (same 36-column order as `SimpleOutputVariant`). `--chunk N`
 splits regions longer than `N` bp into consecutive windows, bounding peak memory independently of
 interval length (identical mechanism to the `--chunk` flag added to VarDictJava in this project).
+`--th N` (alias `--threads`) processes regions across `N` worker threads with ordered streaming
+output (mirrors VarDictJava's parallel mode); output is bit-identical to single-threaded. On the
+698-region hg19 panel at 8 threads: **0.52 s / 0.05 GB** vs VarDictJava **1.88 s / 1.47 GB**.
 
 ## Architecture (mirrors the Java package layout)
 

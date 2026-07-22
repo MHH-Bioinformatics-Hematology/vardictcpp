@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <getopt.h>
 
 #include "config.hpp"
@@ -68,7 +72,9 @@ int main(int argc, char** argv) {
     bool zeroBasedSet = false;
 
     static struct option longopts[] = {
-        {"chunk", required_argument, nullptr, 1000},
+        {"chunk",   required_argument, nullptr, 1000},
+        {"threads", required_argument, nullptr, 1001},
+        {"th",      required_argument, nullptr, 1001},
         {nullptr, 0, nullptr, 0}
     };
     int ch;
@@ -93,6 +99,7 @@ int main(int argc, char** argv) {
         case 't': c.removeDuplicates = true; break;
         case 'h': c.printHeader = true; break;
         case 1000: c.chunkSize = std::atoi(optarg); break;
+        case 1001: c.threads = std::max(1, std::atoi(optarg)); break;
         default: usage(); return 1;
         }
     }
@@ -124,16 +131,66 @@ int main(int argc, char** argv) {
 
     if (c.printHeader) printHeader(stdout);
 
-    Reference ref(c.ref);
-    CigarParser parser(c, ref);
-    for (const auto& region : regions) {
-        // Reference window with a small pad for flank columns.
+    // Process one region into a fresh output buffer. Each call uses its own Reference/CigarParser so
+    // it is safe to run concurrently (htslib faidx/BAM handles are not shared across threads). vd is
+    // released at the end of the call, so per-region memory never accumulates.
+    auto processRegion = [&](const Region& region, Reference& ref) {
         ref.load(region.chr, region.start, region.end, 20 + c.numberNucleotideToExtend);
         VariationData vd;
-        parser.process(region, vd);
+        CigarParser(c, ref).process(region, vd);
         auto variants = callVariants(c, region, vd, ref);
-        for (const auto& v : variants) printVariant(stdout, c, region, v);
-        // vd goes out of scope here -> per-region memory is released before the next window.
+        std::string buf;
+        for (const auto& v : variants) appendVariant(buf, c, region, v);
+        return buf;
+    };
+
+    const int nreg = (int)regions.size();
+    int nthreads = std::max(1, std::min(c.threads, nreg));
+    if (nthreads == 1) {
+        Reference ref(c.ref);
+        for (const auto& region : regions) std::fputs(processRegion(region, ref).c_str(), stdout);
+        return 0;
     }
+
+    // Region-parallel with ordered streaming output (mirrors VarDictJava's AbstractParallelMode:
+    // workers steal regions; a single consumer flushes buffers in region order so output is
+    // deterministic and memory stays bounded to a small window of completed-but-unprinted regions).
+    std::vector<std::string> results(nreg);
+    std::vector<char> done(nreg, 0);
+    std::atomic<int> nextWork{0};
+    std::mutex m;
+    std::condition_variable cv;
+    int printed = 0;
+
+    auto worker = [&]() {
+        Reference ref(c.ref); // per-thread faidx handle
+        int i;
+        while ((i = nextWork.fetch_add(1)) < nreg) {
+            std::string buf = processRegion(regions[i], ref);
+            std::lock_guard<std::mutex> lk(m);
+            results[i] = std::move(buf);
+            done[i] = 1;
+            cv.notify_all();
+        }
+    };
+
+    std::vector<std::thread> pool;
+    for (int t = 0; t < nthreads; ++t) pool.emplace_back(worker);
+
+    // Consumer: flush region buffers strictly in order as they complete.
+    {
+        std::unique_lock<std::mutex> lk(m);
+        while (printed < nreg) {
+            cv.wait(lk, [&]{ return done[printed]; });
+            std::string out = std::move(results[printed]);
+            results[printed].clear(); results[printed].shrink_to_fit();
+            done[printed] = 0;
+            ++printed;
+            lk.unlock();
+            std::fputs(out.c_str(), stdout);
+            lk.lock();
+        }
+    }
+    for (auto& t : pool) t.join();
     return 0;
 }

@@ -8,8 +8,9 @@
 namespace vardict {
 
 // Emits VarDict simple-mode TSV (mirrors printers/SimpleOutputVariant.java column order).
-// Streams one line per variant to `out` (no whole-region buffering).
 void printHeader(std::FILE* out);
-void printVariant(std::FILE* out, const Config& cfg, const Region& region, const Variant& v);
+
+// Append one variant's TSV line to `out` (used to build a per-region buffer for ordered output).
+void appendVariant(std::string& out, const Config& cfg, const Region& region, const Variant& v);
 
 } // namespace vardict

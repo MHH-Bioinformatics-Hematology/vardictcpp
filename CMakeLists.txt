@@ -27,8 +27,9 @@ add_executable(vardictcpp
   src/tovars.cpp
   src/printer.cpp
 )
+find_package(Threads REQUIRED)
 target_include_directories(vardictcpp PRIVATE ${HTS_INCLUDE_DIR} src)
-target_link_libraries(vardictcpp PRIVATE ${HTS_LIBRARY})
+target_link_libraries(vardictcpp PRIVATE ${HTS_LIBRARY} Threads::Threads)
 
 # Keep the htslib runtime path so it runs without LD_LIBRARY_PATH gymnastics.
 get_filename_component(HTS_LIBDIR ${HTS_LIBRARY} DIRECTORY)

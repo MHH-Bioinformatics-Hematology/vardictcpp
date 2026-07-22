@@ -20,7 +20,7 @@ static std::string fmt(double v, const char* pat) {
     return buf;
 }
 
-void printVariant(std::FILE* out, const Config& cfg, const Region& region, const Variant& v) {
+void appendVariant(std::string& out, const Config& cfg, const Region& region, const Variant& v) {
     // Column order matches SimpleOutputVariant.create_simple_variant_36columns().
     std::string af    = fmt(v.frequency, "%.4f");
     std::string pmean = fmt(v.pmean, "%.1f");
@@ -34,7 +34,8 @@ void printVariant(std::FILE* out, const Config& cfg, const Region& region, const
     std::string nm    = v.nm > 0 ? fmt(v.nm, "%.1f") : "0";
     std::string dup   = fmt(v.duprate, "%.1f");
 
-    std::fprintf(out,
+    char buf[1024];
+    std::snprintf(buf, sizeof(buf),
         "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t"
         "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\n",
         cfg.sample.c_str(),
@@ -71,6 +72,7 @@ void printVariant(std::FILE* out, const Config& cfg, const Region& region, const
         v.vartype.c_str(),
         dup.c_str(),
         "0");  // SV_info: empty -> "0"
+    out += buf;
 }
 
 } // namespace vardict
