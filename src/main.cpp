@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
 
     // Modes this port does not implement -> refuse rather than emit wrong output.
     if (has("a")) { std::fprintf(stderr, "vardictcpp: amplicon mode (-a) is not implemented\n"); return 2; }
-    if (has("fisher")) { std::fprintf(stderr, "vardictcpp: --fisher is not implemented\n"); return 2; }
+    c.fisher = has("fisher");
 
     c.ref = val("G", "");
     c.bam = val("b", "");

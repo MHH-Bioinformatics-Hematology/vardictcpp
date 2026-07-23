@@ -28,6 +28,7 @@ add_executable(vardictcpp
   src/tovars.cpp
   src/realigner.cpp
   src/printer.cpp
+  src/fisher.cpp
 )
 find_package(Threads REQUIRED)
 target_include_directories(vardictcpp PRIVATE ${HTS_INCLUDE_DIR} src)

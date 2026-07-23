@@ -46,6 +46,7 @@ struct Config {
     bool removeDuplicates = false; // -t
     int threads = 1;          // -th   (region-parallel; core is per-region single-threaded)
     bool printHeader = false; // -h
+    bool fisher = false;      // --fisher : add strand-bias Fisher exact p-value + odds-ratio columns
     int chunkSize = 0;        // --chunk : split long regions into windows (bounds memory)
 };
 
