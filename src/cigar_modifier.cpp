@@ -124,7 +124,22 @@ void modifyCigar(int& position, Cig& cig, std::string& seq, std::vector<int>& qu
         }
     }
 
-    // Reads with indels are left to the (un-ported) indel-collapse loop.
+    // CigarModifier leading indel-normalization (partial port of the while(flag && indel>0) loop):
+    // ^(\d+)S(\d+)M(\d+)([ID]) with the anchored match <= 10 bp. The short match wedged between a
+    // soft-clip and an indel is an unreliable anchor, so VarDict folds soft-clip + match (+ any
+    // inserted bases) into a single soft-clip and advances the reference position past the consumed
+    // match (+ any deleted bases); its realigner re-finds the indel from the clip if it is real.
+    // (BEGIN_NUMBER_S_NUMBER_M_NUMBER_IorD, CigarModifier.java:156)
+    if (cig.size() >= 3 && cig[0].second == 'S' && cig[1].second == 'M' && cig[1].first <= 10 &&
+        (cig[2].second == 'I' || cig[2].second == 'D')) {
+        int s = cig[0].first, m = cig[1].first, d = cig[2].first;
+        bool isI = (cig[2].second == 'I');
+        position += m + (isI ? 0 : d);
+        cig.erase(cig.begin(), cig.begin() + 3);
+        cig.insert(cig.begin(), {s + m + (isI ? d : 0), 'S'});
+    }
+
+    // Reads with (remaining) indels are left to the (un-ported) indel-collapse loop.
     if (countIndel(cig) > 0) return;
 
     // Trailing: ..M##S -> captureMisSoftlyMS ; else ..##M -> captureMisSoftly3Mismatches
