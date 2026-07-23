@@ -375,4 +375,279 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
     return result;
 }
 
+// ---------------------------------------------------------------------------------------------------
+// Somatic (paired) mode variant builder. Mirrors callVariants' per-variant field computation exactly,
+// but follows ToVarsBuilder in somatic/hasBam2 mode: the position-level `maxfreq <= -f` drop and the
+// isGoodVar drop are NOT applied - every candidate is retained. Each variant is flagged `good`
+// (isGoodVar with the Java-rounded frequency, which is why boundary variants at exactly -f survive)
+// and tagged with its description string; positions are returned sorted, variants within a position
+// ordered by ToVarsBuilder.sortVariants (rounded meanQuality * positionCoverage desc, desc string asc).
+// The field logic is duplicated from callVariants deliberately so simple mode stays byte-for-byte
+// unchanged.
+std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region& region,
+                                                 const VariationData& vd, Reference& ref) {
+    std::vector<SomaticPosition> out;
+    const double freq = cfg.freq;
+
+    for (const auto& [position, alleleMap] : vd.nonInsertionVariants) {
+        if (position < region.start || position > region.end) continue;
+        auto covIt = vd.refCoverage.find(position);
+        if (covIt == vd.refCoverage.end() || covIt->second == 0) continue;
+        int totalCov = covIt->second;
+        char refBase = ref.at(position);
+
+        const Variation* refVar = nullptr;
+        auto rit = alleleMap.find(std::string(1, refBase));
+        if (rit != alleleMap.end()) refVar = &rit->second;
+        int refHicnt = refVar ? refVar->highQualityReadsCount : 0;
+        double refMeanMapq = (refVar && refVar->varsCount) ? refVar->meanMappingQuality / refVar->varsCount : 0;
+
+        int hicov = 0;
+        for (const auto& [al, v] : alleleMap) hicov += v.highQualityReadsCount;
+
+        // genotype1: identical to callVariants.
+        std::string positionGenotype1;
+        {
+            double refFreqG = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+            if (refVar && refFreqG >= freq) {
+                positionGenotype1 = std::string(1, refBase);
+            } else {
+                const std::string* best = nullptr;
+                double bestKey = 0;
+                auto consider = [&](const std::string& al, const Variation& vv) {
+                    if (al.size() == 1 && al[0] == refBase) return;
+                    if (vv.varsCount == 0) return;
+                    double q = roundHalfEven("0.0", vv.meanQuality / (double)vv.varsCount);
+                    double key = q * (double)vv.varsCount;
+                    if (best == nullptr || key > bestKey || (key == bestKey && al < *best)) {
+                        best = &al; bestKey = key;
+                    }
+                };
+                for (const auto& [al, vv] : alleleMap) consider(al, vv);
+                auto insG = vd.insertionVariants.find(position);
+                if (insG != vd.insertionVariants.end())
+                    for (const auto& [al, vv] : insG->second) consider(al, vv);
+                if (best) positionGenotype1 = *best;
+                else positionGenotype1 = std::string(1, refBase);
+            }
+            if (!positionGenotype1.empty() && positionGenotype1[0] == '+' &&
+                positionGenotype1.find("<dup") == std::string::npos) {
+                positionGenotype1 = "+" + std::to_string((int)positionGenotype1.size() - 1);
+            }
+        }
+
+        SomaticPosition sp;
+        sp.position = position;
+        sp.refHicnt = refHicnt;
+        sp.refMeanMapq = refMeanMapq;
+
+        // Records a built variant into the position group with good flag + description string.
+        auto record = [&](Variant&& var, const std::string& desc) {
+            var.descriptionString = desc;
+            // isGoodVar sees the Java-rounded frequency so a variant at exactly -f (rounds to 0.0100)
+            // is retained; the stored frequency stays raw (formatting rounds identically for output).
+            Variant probe = var;
+            probe.frequency = round4(var.frequency);
+            var.good = isGoodVar(cfg, probe, refHicnt, refMeanMapq);
+            sp.variants.push_back(std::move(var));
+        };
+
+        for (const auto& [allele, v] : alleleMap) {
+            if (allele.size() == 1 && allele[0] == refBase) continue;
+            if (v.varsCount < cfg.minReads) continue;
+            double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
+
+            Variant var;
+            var.startPosition = position;
+            var.endPosition = position;
+            var.totalPosCoverage = totalCov;
+            var.varsCount = v.varsCount;
+            var.varFwd = v.varsCountOnForward;
+            var.varRev = v.varsCountOnReverse;
+            if (refVar) { var.refFwd = refVar->varsCountOnForward; var.refRev = refVar->varsCountOnReverse; }
+            var.frequency = af;
+            var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
+            var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
+            var.mapq  = v.varsCount ? v.meanMappingQuality / v.varsCount : 0;
+            var.nm    = v.varsCount ? v.numberOfMismatches / v.varsCount : 0;
+            var.pstd  = v.pstd ? 1 : 0;
+            var.qstd  = v.qstd ? 1 : 0;
+            var.hicnt = v.highQualityReadsCount;
+            var.hicov = hicov;
+            var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
+            var.extrafreq = (v.extracnt != 0 && totalCov > 0) ? (double)v.extracnt / totalCov : 0;
+            var.qratio = v.lowQualityReadsCount > 0
+                       ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
+                       : (double)v.highQualityReadsCount / 0.5;
+            var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+                     + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias));
+            var.duprate = vd.duprate();
+
+            if (allele.find('&') != std::string::npos) {
+                std::string va;
+                for (char ch : allele) if (ch != '&') va += ch;
+                var.varallele = va;
+                std::string ra;
+                for (int k = 0; k < (int)va.size(); ++k) ra += ref.at(position + k);
+                var.refallele = ra;
+                var.endPosition = position + (int)va.size() - 1;
+                std::string t1, t2;
+                for (int q = position - 30; q <= position + 1; ++q) if (q >= 1) t1 += ref.at(q);
+                for (int q = position + 2; q <= position + 70; ++q) t2 += ref.at(q);
+                MSIResult m = findMSI(t1, t2);
+                var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
+            } else if (allele[0] == '+') {
+                var.refallele = std::string(1, refBase);
+                var.varallele = std::string(1, refBase) + allele.substr(1);
+            } else if (allele[0] == '-') {
+                int dl = std::stoi(allele.substr(1));
+                char anchor = ref.has(position - 1) ? ref.at(position - 1) : refBase;
+                std::string delseq;
+                for (int i = 0; i < dl; ++i) if (ref.has(position + i)) delseq += ref.at(position + i);
+                var.varallele = std::string(1, anchor);
+                var.refallele = std::string(1, anchor) + delseq;
+                var.startPosition = position - 1;
+                var.endPosition = position + dl - 1;
+                std::string leftseq, tseq;
+                for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
+                for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
+                std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
+                std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
+                MSIResult m = findMSI(t1, t2, leftseq);
+                MSIResult m2 = findMSI(leftseq, t2);
+                double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
+                if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
+                if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
+                var.msi = msi; var.shift3 = shift3; var.msint = msint;
+            } else {
+                var.refallele = std::string(1, refBase);
+                var.varallele = allele;
+                std::string tseq1, tseq2;
+                for (int q = position - 30; q <= position + 1; ++q) if (q >= 1) tseq1 += ref.at(q);
+                for (int q = position + 2; q <= position + 70; ++q) tseq2 += ref.at(q);
+                MSIResult m = findMSI(tseq1, tseq2);
+                var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
+            }
+            var.vartype = classifyType(var.refallele, var.varallele);
+            {
+                auto rawDesc = [&](const std::string& a) -> std::string {
+                    if (!a.empty() && a[0] == '+') return "+" + std::to_string((int)a.size() - 1);
+                    return a;
+                };
+                std::string g1 = positionGenotype1;
+                std::string g2 = rawDesc(allele);
+                int gEnd = position;
+                if (!allele.empty() && allele[0] == '-') {
+                    int dl = 0; size_t k = 1; while (k < allele.size() && isdigit((unsigned char)allele[k])) { dl = dl*10 + (allele[k]-'0'); ++k; }
+                    gEnd = position + dl - 1;
+                }
+                auto ampAppend = [&](const std::string& s) -> std::string {
+                    auto amp = s.find('&');
+                    if (amp == std::string::npos) return std::string();
+                    std::string grp;
+                    for (size_t i = amp + 1; i < s.size(); ++i) {
+                        char cc = s[i];
+                        if (cc=='A'||cc=='T'||cc=='G'||cc=='C') grp += cc; else break;
+                    }
+                    return grp;
+                };
+                auto joinRefLocal = [&](int from, int to) -> std::string {
+                    std::string r;
+                    for (int i = from; i <= to; ++i) if (ref.has(i)) r += ref.at(i);
+                    return r;
+                };
+                std::string extra = ampAppend(allele);
+                if (!extra.empty()) {
+                    std::string tch = joinRefLocal(gEnd + 1, gEnd + (int)extra.size());
+                    g1 += tch;
+                    gEnd += (int)extra.size();
+                    std::string va = allele; auto amp = va.find('&'); if (amp != std::string::npos) va.erase(amp, 1);
+                    std::string vextra = ampAppend(va);
+                    if (!vextra.empty()) {
+                        std::string tch2 = joinRefLocal(gEnd + 1, gEnd + (int)vextra.size());
+                        g1 += tch2;
+                        gEnd += (int)vextra.size();
+                    }
+                }
+                std::string genotype = g1 + "/" + g2;
+                std::string cleaned;
+                for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
+                var.genotype = cleaned;
+            }
+            for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
+            for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
+
+            record(std::move(var), allele);
+        }
+
+        auto insIt = vd.insertionVariants.find(position);
+        if (insIt != vd.insertionVariants.end()) {
+            for (const auto& [allele, v] : insIt->second) {
+                if (v.varsCount < cfg.minReads) continue;
+                double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
+                Variant var;
+                var.startPosition = position; var.endPosition = position;
+                var.totalPosCoverage = totalCov; var.varsCount = v.varsCount;
+                var.varFwd = v.varsCountOnForward; var.varRev = v.varsCountOnReverse;
+                if (refVar) { var.refFwd = refVar->varsCountOnForward; var.refRev = refVar->varsCountOnReverse; }
+                var.frequency = af;
+                var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
+                var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
+                var.mapq  = v.varsCount ? v.meanMappingQuality / v.varsCount : 0;
+                var.nm    = v.varsCount ? v.numberOfMismatches / v.varsCount : 0;
+                var.pstd  = v.pstd ? 1 : 0;
+                var.qstd  = v.qstd ? 1 : 0;
+                var.hicnt = v.highQualityReadsCount; var.hicov = hicov;
+                var.refallele = std::string(1, refBase);
+                var.varallele = std::string(1, refBase) + allele.substr(1);
+                var.vartype = "Insertion";
+                {
+                    double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+                    std::string g2 = "+" + std::to_string((int)allele.size() - 1);
+                    std::string g1 = (refFreq >= freq) ? var.refallele : g2;
+                    var.genotype = g1 + "/" + g2;
+                }
+                var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
+                var.duprate = vd.duprate();
+                {
+                    std::string ins = allele.substr(1);
+                    std::string leftseq, tseq2;
+                    for (int q = position - 50; q <= position; ++q) if (q >= 1) leftseq += ref.at(q);
+                    for (int q = position + 1; q <= position + 70; ++q) tseq2 += ref.at(q);
+                    MSIResult m = findMSI(ins, tseq2, leftseq);
+                    MSIResult m2 = findMSI(leftseq, tseq2);
+                    double msi = m.msi; int msint = m.msintLen;
+                    if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
+                    if (!ins.empty() && msi <= m.shift3 / (double)ins.size()) msi = m.shift3 / (double)ins.size();
+                    var.msi = msi; var.shift3 = m.shift3; var.msint = msint;
+                }
+                var.qratio = v.lowQualityReadsCount > 0
+                           ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
+                           : (double)v.highQualityReadsCount / 0.5;
+                var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads, cfg.bias))
+                         + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
+                for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
+                for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(position + i);
+                // Insertion description strings are stored under "+<seq>" like createInsertion's key.
+                record(std::move(var), allele);
+            }
+        }
+
+        // sortVariants: rounded meanQuality * positionCoverage descending, tie-break description asc.
+        std::sort(sp.variants.begin(), sp.variants.end(), [](const Variant& a, const Variant& b) {
+            double ka = roundHalfEven("0.0", a.qmean) * a.varsCount;
+            double kb = roundHalfEven("0.0", b.qmean) * b.varsCount;
+            if (ka != kb) return ka > kb;
+            return a.descriptionString < b.descriptionString;
+        });
+
+        out.push_back(std::move(sp));
+    }
+    // Positions come from a std::map (nonInsertionVariants) and are already ascending; keep it explicit.
+    std::sort(out.begin(), out.end(), [](const SomaticPosition& a, const SomaticPosition& b) {
+        return a.position < b.position;
+    });
+    return out;
+}
+
 } // namespace vardict

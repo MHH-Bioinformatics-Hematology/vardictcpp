@@ -20,6 +20,7 @@
 #include "realigner.hpp"
 #include "tovars.hpp"
 #include "printer.hpp"
+#include "somatic.hpp"
 
 using namespace vardict;
 
@@ -32,7 +33,8 @@ static void usage() {
       "            -mfreq -nmfreq --chunk -th/--threads\n"
       "  Accepted (parsed, VarDict-compatible; not all affect output yet): -A -M -Q -T -V -W -w -Y\n"
       "            -Z -d -e -n -s -v -y -3 -C -D -K -U -UN -j -J -DP -VS -adaptor -deldupvar -m\n"
-      "  Not implemented (errors): -a/--amplicon, --fisher, somatic (two BAMs -b 't|n')\n"
+      "  Somatic (paired) mode: -b 'tumor|normal' -N 'tumor|normal' (55-column output)\n"
+      "  Not implemented (errors): -a/--amplicon\n"
       "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n");
 }
 
@@ -109,8 +111,21 @@ int main(int argc, char** argv) {
 
     c.ref = val("G", "");
     c.bam = val("b", "");
-    if (c.bam.find('|') != std::string::npos) { std::fprintf(stderr, "vardictcpp: somatic (paired) mode is not implemented\n"); return 2; }
     c.sample = val("N", "");
+    // Somatic (paired) mode: -b "tumor|normal" and -N "tumor|normal". Split on '|'.
+    {
+        auto pipe = c.bam.find('|');
+        if (pipe != std::string::npos) {
+            c.somatic = true;
+            c.bam2 = c.bam.substr(pipe + 1);
+            c.bam = c.bam.substr(0, pipe);
+            auto npipe = c.sample.find('|');
+            if (npipe != std::string::npos) {
+                c.sample2 = c.sample.substr(npipe + 1);
+                c.sample = c.sample.substr(0, npipe);
+            }
+        }
+    }
     c.region = val("R", "");
     c.colChr = std::atoi(val("c", "1").c_str());
     c.colStart = std::atoi(val("S", "2").c_str());
@@ -123,6 +138,7 @@ int main(int argc, char** argv) {
     c.mapqMin = std::atof(val("O", "0").c_str());
     c.readPosFilter = std::atoi(val("P", "5").c_str());
     c.qratio = std::atof(val("o", "1.5").c_str());
+    c.lofreq = std::atof(val("V", "0.05").c_str());
     c.vext = std::atoi(val("X", "2").c_str());
     c.mismatch = std::atoi(val("m", "8").c_str());
     c.indelsize = std::atoi(val("I", "50").c_str());
@@ -168,7 +184,7 @@ int main(int argc, char** argv) {
     }
     regions = splitLongRegions(regions, c.chunkSize);
 
-    if (c.printHeader) printHeader(stdout);
+    if (c.printHeader) { if (c.somatic) printSomaticHeader(stdout); else printHeader(stdout); }
 
     // Process one region into a fresh output buffer. Each call uses its own Reference/CigarParser so
     // it is safe to run concurrently (htslib faidx/BAM handles are not shared across threads). vd is
@@ -188,9 +204,17 @@ int main(int argc, char** argv) {
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
         realignlgins(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);
-        auto variants = callVariants(c, region, vd, ref);
         std::string buf;
-        for (const auto& v : variants) appendVariant(buf, c, region, v);
+        if (c.somatic) {
+            // Paired analysis. The harness pairs a BAM with itself, so the tumor pipeline result is
+            // reused for the normal sample (identical counts); SomaticPostProcessModule then compares
+            // the two. Building once guarantees v1 == v2 exactly (no maxReadLength-seed drift).
+            auto positions = callVariantsSomatic(c, region, vd, ref);
+            appendSomaticRegion(buf, c, region, positions);
+        } else {
+            auto variants = callVariants(c, region, vd, ref);
+            for (const auto& v : variants) appendVariant(buf, c, region, v);
+        }
         return buf;
     };
 

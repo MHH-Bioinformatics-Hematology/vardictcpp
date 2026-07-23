@@ -6,9 +6,12 @@ namespace vardict {
 // Subset of VarDict's Configuration relevant to the simple/pileup counting core.
 // Field names mirror VarDictJava's Configuration.java so the port is auditable.
 struct Config {
-    std::string bam;          // -b
+    std::string bam;          // -b  (in somatic mode: tumor BAM, the part before '|')
+    std::string bam2;         // -b  normal BAM (part after '|'); non-empty only in somatic mode
+    bool somatic = false;     // two-BAM paired analysis (-b "tumor|normal")
     std::string ref;          // -G  reference fasta (indexed)
-    std::string sample;       // -N
+    std::string sample;       // -N  (in somatic mode: tumor|normal sample names)
+    std::string sample2;      // -N  normal sample name (part after '|')
     std::string bed;          // positional BED file (optional)
     std::string region;       // -R  chr:start-end (optional)
 
@@ -27,6 +30,7 @@ struct Config {
     double goodq = 22.5;      // -q  base-quality boundary for hi/lo-quality counting + isGoodVar
     int readPosFilter = 5;    // -P  minimum mean read position (isGoodVar)
     double qratio = 1.5;      // -o  minimum hi/lo-quality ratio (isGoodVar)
+    double lofreq = 0.05;     // -V  somatic low-frequency threshold (LikelyLOH/LikelySomatic gating)
     double monomerMsiFrequency = 0.25;    // --mfreq
     double nonMonomerMsiFrequency = 0.1;  // --nmfreq
     int vext = 2;             // -X  extension for MNV/complex-variant growth
