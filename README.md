@@ -137,11 +137,17 @@ as mismatches. On the deduplicated MRD data this makes deletion rows byte-identi
 eliminates every prior deletion false-negative.
 
 **Validation on UMI-deduplicated MRD data** (the caller's real production input, 12 samples,
-`bench/results_dedup.md`): **10 of 12 samples exact** (0 FP/FN, byte-identical); **0
-false-negatives across all 12**; **2 total false-positives**, both the single documented
-`CigarModifier` gap below. Performance vs VarDictJava: **peak RSS 39× lower on average / 91× at
-peak** (2.57 GB → 0.028 GB on a repeat-dense sample) and **wall-clock 13× faster on average / 16× on
-the slowest sample** (230 s → 14.4 s).
+`bench/results_dedup.md`): **variant set exact on all 12 samples (0 FP / 0 FN)** and **11 of 12
+fully byte-identical** (all 36 columns). The two dedup false-positives are now closed — by the `-m`
+mismatch read filter (a poly-G artifact read) and the leading soft-clip + short-match + indel
+`CigarModifier` rule (a spurious deletion behind a soft-clip) — and the shared deletion is fully
+byte-identical after porting the deletion reference-coverage increment plus the
+`beginDigitMNumberIorDNumberM` reshaping it depends on. The **one** remaining non-identical row is an
+ultra-high-coverage (~1.4 M) insertion whose `Ref{Fwd,Rev}`/`HiCov`/`Sig_Noise`/`HiAF`/`PStd`/`QStd`
+come from the un-ported `createInsertion` + `calcHicov` reconciliation; its AF still matches to four
+decimals. Performance vs VarDictJava: **peak RSS 39× lower on average / 91× at peak** (2.57 GB →
+0.028 GB on a repeat-dense sample) and **wall-clock 13× faster on average / 16× on the slowest
+sample** (230 s → 14.4 s).
 
 **Not yet ported — `CigarModifier` (the precise cause of the remaining false-positives):**
 

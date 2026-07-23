@@ -16,38 +16,43 @@ the MRD pipeline. Both tools run the **same** command over the same 698-region h
 | MRD2019-054_H19KM2702 | 1 | 1 | 0 | 0 | 1/1 | 1/1 | 0.50 GB | 0.025 GB | 2.3 s | 0.5 s |
 | MRD2019-079_H19KM3532 | 0 | 0 | 0 | 0 | — | — | 0.62 GB | 0.025 GB | 2.2 s | 0.4 s |
 | MRD2020-060_H18PB1757 | 0 | 0 | 0 | 0 | — | — | 0.90 GB | 0.022 GB | 1.8 s | 0.4 s |
-| MRD2019-040_H19KM2056 | 2 | 3 | 1 | 0 | 1/2 | 1/2 | 0.90 GB | 0.024 GB | 2.0 s | 0.5 s |
+| MRD2019-040_H19KM2056 | 2 | 2 | 0 | 0 | 2/2 | 2/2 | 0.90 GB | 0.024 GB | 2.0 s | 0.5 s |
 | MRD2019-037_H19KM1814 | 0 | 0 | 0 | 0 | — | — | 1.23 GB | 0.025 GB | 6.8 s | 0.9 s |
 | MRD2020-034_H17KM1413 | 0 | 0 | 0 | 0 | — | — | 0.89 GB | 0.026 GB | 2.2 s | 0.5 s |
 | MRD2023-005_H23KM1055 | 0 | 0 | 0 | 0 | — | — | 0.89 GB | 0.021 GB | 2.0 s | 0.4 s |
 | MRD2023-014_H23PB1357 | 0 | 0 | 0 | 0 | — | — | 0.45 GB | 0.021 GB | 2.0 s | 0.4 s |
 | MRD2025-006_H25KM1467 | 0 | 0 | 0 | 0 | — | — | 0.92 GB | 0.022 GB | 2.5 s | 0.4 s |
 | MRD2023-006_H23KM1033 | 0 | 0 | 0 | 0 | — | — | 0.54 GB | 0.025 GB | 2.4 s | 0.4 s |
-| MRD2019-071_H19KM3257 | 3 | 4 | 1 | 0 | 2/3 | 2/3 | **2.57 GB** | **0.028 GB** | **230 s** | **14.4 s** |
+| MRD2019-071_H19KM3257 | 3 | 3 | 0 | 0 | 2/3 | 2/3 | **2.57 GB** | **0.028 GB** | **230 s** | **14.4 s** |
 
 ## Accuracy
 
-- **10 of 12 samples: exact parity** — identical variant set (0 FP / 0 FN) and byte-identical rows.
-- **0 false-negatives across all 12 samples.** Every variant VarDict calls, vardictcpp also calls.
-- **2 false-positives total**, both on the two samples that carry them, and both are the **single
-  documented `CigarModifier` gap** (reads VarDict rewrites-before-counting that this port counts):
-  - `chr2:33141508 A>G` (MRD2019-040): 2 poly-G MiSeq artifact reads (`110M81S`, `179M29S`) whose
-    G>A tail VarDict soft-clips away via `captureMisSoftly3Mismatches`; this port counts the SNV.
-  - `chr15:90631849 GA>G` (MRD2019-071): a spurious 1 bp deletion in `15S9M1D126M` reads — a 9 bp
-    mapped island precedes the indel behind a 15 bp soft-clip; VarDict reshapes the read so the
-    deletion never counts.
+- **Variant set exact on all 12 samples: 0 false-positives, 0 false-negatives.** Every call matches
+  VarDict, both ways.
+- **11 of 12 samples: fully byte-identical** (all rows, all 36 columns). 3 of the 4 samples that carry
+  any variant reproduce byte-for-byte; the 4th differs on a single row (below).
+- The **lone remaining diff** is one ultra-high-coverage insertion `chr21:36259169 A>AGCGCCAGT`
+  (~1.4 M depth, a satellite/rDNA amplification locus) on MRD2019-071: `Ref{Fwd,Rev}`, `HiCov`,
+  `Sig_Noise`, `HiAF` and `PStd/QStd` differ, from the un-ported `createInsertion` + `calcHicov`
+  insertion-coverage reconciliation. The **call and AF still match** (0.3110 vs 0.3111).
 
-### Deletion representation fixed in this pass
+### Fixes made in this pass (each regression-verified)
 
-On MRD2019-040 the shared deletion `chr15:90631879 TG>T` previously diverged (C++ emitted a
-non-normalized `GG>G`, type `Complex`). Ported VarDict's exact deletion handling
-(`ToVarsBuilder` + `proceedVrefIsDeletion`): anchor one base 5′ of the stored position
-(`ref[p-1] + deleted bases` / `ref[p-1]`, `startPosition--`), deletion `findMSI`, the `genotype1/-N`
-genotype form, `varType`-based `Deletion` classification, and `NM = edit_distance − (I+D length)`.
-The row is now **byte-identical to VarDict on 30 of 32 columns**; the only remaining difference is
-`Depth` (52 vs 54) — the documented distributed-coverage accounting at indel-dense positions — which
-cascades to `AF`. This fix also eliminated **every** prior deletion false-negative (the mismatched
-normalization had made the same event look like a different key).
+1. **Deletion representation** (`ToVarsBuilder` + `proceedVrefIsDeletion`): anchor one base 5′ of the
+   stored position (`ref[p-1] + deleted bases` / `ref[p-1]`, `startPosition--`), deletion `findMSI`,
+   the `genotype1/-N` genotype form, `varType`-based `Deletion` classification, and
+   `NM = edit_distance − (I+D length)`. Eliminated every prior deletion false-negative.
+2. **`-m` mismatch read filter** (`CigarParser`): skip a read whose `NM − indels` exceeds `-m`
+   (default 8). Closed the `chr2:33141508 A>G` false-positive (poly-G MiSeq artifact reads, NM 3/9).
+3. **Leading soft-clip + short-match + indel** (`CigarModifier` `BEGIN_NUMBER_S_NUMBER_M_NUMBER_IorD`):
+   fold `^\d+S(≤10)M\d+[ID]` into one soft-clip. Closed the `chr15:90631849 GA>G` false-positive
+   (`15S9M1D126M` reads reshaped to `24S126M`).
+4. **Deletion reference coverage** (`addVariationForDeletion`): a deletion read counts toward total
+   depth at every deleted base. Made the `chr15:90631879 TG>T` deletion row fully byte-identical
+   (Depth 52→54).
+5. **`beginDigitMNumberIorDNumberM`** (`CigarModifier`): fold `^(\d)M\d+[ID]\d+M` (leading 1-9 bp
+   match) into a soft-clip. Required so fix 4 does not over-count deletions VarDict reshapes away
+   (e.g. `7M2D143M → 7S143M`).
 
 ## Performance (the original motivation: `-f 0` → ~200 GB Java)
 
