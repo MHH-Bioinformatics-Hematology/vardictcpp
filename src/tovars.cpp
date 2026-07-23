@@ -240,6 +240,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
                 var.mapq  = v.varsCount ? v.meanMappingQuality / v.varsCount : 0;
                 var.nm    = v.varsCount ? v.numberOfMismatches / v.varsCount : 0;
+                var.pstd  = v.pstd ? 1 : 0;
+                var.qstd  = v.qstd ? 1 : 0;
                 var.hicnt = v.highQualityReadsCount; var.hicov = hicov;
                 var.refallele = std::string(1, refBase);
                 var.varallele = std::string(1, refBase) + allele.substr(1);

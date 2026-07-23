@@ -235,15 +235,22 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 std::string sig = "+" + ins;
                 if (p >= rlo && p <= rhi && ins.find('N') == std::string::npos) {
                     int tp = foldPos(rpe);
+                    // mean quality of the inserted segment (CigarParser.processInsertion: tmpq)
+                    double tmpq = qsum / (len ? len : 1);
                     out.positionToInsertionCount[p][sig]++;
                     Variation& v = out.insertionVariants[p][sig];
+                    // pstd/qstd flags (set before pp/pq are refreshed), per Java processInsertion
+                    if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
+                    if (!v.qstd && v.pq != 0 && tmpq != v.pq) v.qstd = true;
                     v.varsCount++;
                     v.incDir(reverse);
                     v.meanPosition += tp;
-                    v.meanQuality += qsum / (len ? len : 1);
+                    v.meanQuality += tmpq;
                     v.meanMappingQuality += mapq;
+                    v.pp = tp; v.pq = tmpq;
+                    // high/low-quality read split by goodq threshold (Java: tmpq >= goodq)
+                    if (tmpq >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
                     v.numberOfMismatches += nm;
-                    v.highQualityReadsCount++;
                 }
                 qpos += len; rpe += len;
                 break;
