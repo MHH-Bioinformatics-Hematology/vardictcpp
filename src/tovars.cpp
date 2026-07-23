@@ -1,4 +1,5 @@
 #include "tovars.hpp"
+#include "util.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -110,6 +111,43 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         int hicov = 0;
         for (const auto& [al, v] : alleleMap) hicov += v.highQualityReadsCount;
 
+        // genotype1 = dominant description string, shared by every variant row at this position
+        // (ToVarsBuilder.collectReferenceVariants). If the reference variant has frequency >= -f it
+        // is the reference base; otherwise it is the highest-ranked non-reference variant, where the
+        // rank key is roundHalfEven("0.0", meanQuality) * varsCount descending, tie broken by the
+        // description string ascending (sortVariants). Candidates include non-insertion variants AND
+        // insertions (createVariant + createInsertion feed the same sorted list).
+        std::string positionGenotype1;
+        {
+            double refFreqG = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+            if (refVar && refFreqG >= freq) {
+                positionGenotype1 = std::string(1, refBase);
+            } else {
+                const std::string* best = nullptr;
+                double bestKey = 0;
+                auto consider = [&](const std::string& al, const Variation& vv) {
+                    if (al.size() == 1 && al[0] == refBase) return; // reference variant, not in list
+                    if (vv.varsCount == 0) return;
+                    double q = roundHalfEven("0.0", vv.meanQuality / (double)vv.varsCount);
+                    double key = q * (double)vv.varsCount;
+                    if (best == nullptr || key > bestKey || (key == bestKey && al < *best)) {
+                        best = &al; bestKey = key;
+                    }
+                };
+                for (const auto& [al, vv] : alleleMap) consider(al, vv);
+                auto insG = vd.insertionVariants.find(position);
+                if (insG != vd.insertionVariants.end())
+                    for (const auto& [al, vv] : insG->second) consider(al, vv);
+                if (best) positionGenotype1 = *best;
+                else positionGenotype1 = std::string(1, refBase);
+            }
+            // '+' handling (collectReferenceVariants): plain insertion -> "+<insertedLength>".
+            if (!positionGenotype1.empty() && positionGenotype1[0] == '+' &&
+                positionGenotype1.find("<dup") == std::string::npos) {
+                positionGenotype1 = "+" + std::to_string((int)positionGenotype1.size() - 1);
+            }
+        }
+
         for (const auto& [allele, v] : alleleMap) {
             if (allele.size() == 1 && allele[0] == refBase) continue; // skip pure reference
             if (v.varsCount < cfg.minReads) continue;
@@ -200,15 +238,57 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             // variant; genotype2 is THIS allele's raw description: SNV -> base, deletion -> "-N",
             // MNV -> allele with '&' stripped. Then '&'/'#' removed and '^' -> 'i'.
             {
+                // genotype2 = THIS allele's raw description: deletion "-N", insertion "+len",
+                // MNV/SNV keep the raw string (incl. '&', cleaned at the very end).
                 auto rawDesc = [&](const std::string& a) -> std::string {
                     if (!a.empty() && a[0] == '+') return "+" + std::to_string((int)a.size() - 1);
-                    if (!a.empty() && a[0] == '-') return a;           // deletion "-N"
-                    std::string s; for (char ch : a) if (ch != '&') s += ch; // MNV/SNV
-                    return s;
+                    return a; // deletion "-N" or MNV/SNV description (with '&' if present)
                 };
-                double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
-                std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : rawDesc(allele);
+                // genotype1current starts from the position's dominant description string.
+                std::string g1 = positionGenotype1;
                 std::string g2 = rawDesc(allele);
+
+                // AMP_ATGC ("&([ATGC]+)"): when the variant description is followed by a matched
+                // sequence, append the corresponding reference bases to genotype1current and refallele
+                // and advance endPosition (ToVarsBuilder lines 765-787). The local endPosition here is
+                // `position` for SNP/MNP, or position+dellen-1 for a deletion description - NOT the
+                // realized var.endPosition set above for MNVs.
+                int gEnd = position;
+                if (!allele.empty() && allele[0] == '-') {
+                    int dl = 0; size_t k = 1; while (k < allele.size() && isdigit((unsigned char)allele[k])) { dl = dl*10 + (allele[k]-'0'); ++k; }
+                    gEnd = position + dl - 1;
+                }
+                auto ampAppend = [&](const std::string& s) -> std::string {
+                    // return the matched group of the first "&([ATGC]+)" in s, else empty
+                    auto amp = s.find('&');
+                    if (amp == std::string::npos) return std::string();
+                    std::string grp;
+                    for (size_t i = amp + 1; i < s.size(); ++i) {
+                        char c = s[i];
+                        if (c=='A'||c=='T'||c=='G'||c=='C') grp += c; else break;
+                    }
+                    return grp;
+                };
+                auto joinRefLocal = [&](int from, int to) -> std::string {
+                    std::string r;
+                    for (int i = from; i <= to; ++i) if (ref.has(i)) r += ref.at(i);
+                    return r;
+                };
+                std::string extra = ampAppend(allele);
+                if (!extra.empty()) {
+                    std::string tch = joinRefLocal(gEnd + 1, gEnd + (int)extra.size());
+                    g1 += tch;
+                    gEnd += (int)extra.size();
+                    // nested AMP_ATGC on the (single-'&'-stripped) variant allele
+                    std::string va = allele; auto amp = va.find('&'); if (amp != std::string::npos) va.erase(amp, 1);
+                    std::string vextra = ampAppend(va);
+                    if (!vextra.empty()) {
+                        std::string tch2 = joinRefLocal(gEnd + 1, gEnd + (int)vextra.size());
+                        g1 += tch2;
+                        gEnd += (int)vextra.size();
+                    }
+                }
+
                 std::string genotype = g1 + "/" + g2;
                 std::string cleaned;
                 for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
