@@ -356,7 +356,7 @@ static MismatchResult findMM3(VariationData& vd, Reference& ref, int p, std::str
 
 static std::string decorate(std::string s) { if (s.size() > 1) s.insert(1, "&"); return s; }
 
-void adjustMNP(VariationData& vd, Reference&, const Config&, const Region&) {
+void adjustMNP(VariationData& vd, Reference& ref, const Config&, const Region&) {
     struct Item { int position; std::string desc; int count; };
     std::vector<Item> tmp;
     for (auto& [pos, m] : vd.mnp) for (auto& [desc, cnt] : m) tmp.push_back({pos, desc, cnt});
@@ -390,6 +390,42 @@ void adjustMNP(VariationData& vd, Reference&, const Config&, const Region&) {
                     Variation& tref = rit->second;
                     if (tref.varsCount >= 0 && tref.varsCount < vref.varsCount) {
                         adjCnt(vref, tref); vd.refCoverage[position] += tref.varsCount; rposIt->second.erase(right);
+                    }
+                }
+            }
+        }
+        // Absorb a 3' soft-clip consensus that starts with the MNP (the aligner clipped reads at the
+        // MNP mismatches instead of aligning them). VariationRealigner.adjustMNP lines 346-358.
+        {
+            auto scIt = vd.softClips3End.find(position);
+            if (scIt != vd.softClips3End.end() && !scIt->second.used) {
+                Sclip& sc3v = scIt->second;
+                std::string seq = findconseq(sc3v);
+                if (seq.size() >= mnt.size() && seq.compare(0, mnt.size(), mnt) == 0) {
+                    if (seq.size() == mnt.size() ||
+                        ismatchref(seq.substr(mnt.size()), ref, position + (int)mnt.size(), 1)) {
+                        adjCnt(vref, sc3v);
+                        vd.refCoverage[position] += sc3v.varsCount;
+                        sc3v.used = true;
+                    }
+                }
+            }
+        }
+        // Absorb a 5' soft-clip consensus ending with the MNP (reverse orientation). Lines 360-377.
+        {
+            auto scIt = vd.softClips5End.find(position + (int)mnt.size());
+            if (scIt != vd.softClips5End.end() && !scIt->second.used) {
+                Sclip& sc5v = scIt->second;
+                std::string seq = findconseq(sc5v);
+                if (!seq.empty() && seq.size() >= mnt.size()) {
+                    std::reverse(seq.begin(), seq.end());
+                    if (seq.compare(seq.size() - mnt.size(), mnt.size(), mnt) == 0) {
+                        if (seq.size() == mnt.size() ||
+                            ismatchref(seq.substr(0, seq.size() - mnt.size()), ref, position - 1, -1)) {
+                            adjCnt(vref, sc5v);
+                            vd.refCoverage[position] += sc5v.varsCount;
+                            sc5v.used = true;
+                        }
                     }
                 }
             }
