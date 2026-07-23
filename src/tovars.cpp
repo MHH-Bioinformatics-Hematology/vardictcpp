@@ -72,6 +72,16 @@ static MSIResult findMSI(const std::string& tseq1, const std::string& tseq2, con
     return { msicnt, shift3, (int)maxmsi.size() };
 }
 
+// Round to 4 decimals with round-half-to-even (matches Java Utils.roundHalfEven("0.0000", x));
+// %.4f uses the default IEEE round-to-nearest-even. VarDict stores the *rounded* frequency in
+// createVariant BEFORE the position-level `maxfreq <= freq` filter, so a variant at 3/299 = 0.010033
+// rounds to 0.0100 and is dropped; comparing the unrounded value would wrongly keep it.
+static double round4(double x) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.4f", x);
+    return std::atof(buf);
+}
+
 // Port of Variant.varType() (classify by realized ref/alt alleles, not the raw description).
 static std::string classifyType(const std::string& ref, const std::string& alt) {
     if (ref == alt && ref.size() == 1) return "";
@@ -152,7 +162,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             if (allele.size() == 1 && allele[0] == refBase) continue; // skip pure reference
             if (v.varsCount < cfg.minReads) continue;
             double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
-            if (!cfg.doPileup && af <= freq) continue; // -f filter (freq=0 keeps af>0)
+            if (!cfg.doPileup && freq > 0 && round4(af) <= freq) continue; // -f filter on rounded freq (Java maxfreq); freq=0 keeps af>0
 
             Variant var;
             var.startPosition = position;
@@ -309,7 +319,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             for (const auto& [allele, v] : insIt->second) {
                 if (v.varsCount < cfg.minReads) continue;
                 double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
-                if (!cfg.doPileup && af <= freq) continue;
+                if (!cfg.doPileup && freq > 0 && round4(af) <= freq) continue;
                 Variant var;
                 var.startPosition = position; var.endPosition = position;
                 var.totalPosCoverage = totalCov; var.varsCount = v.varsCount;
