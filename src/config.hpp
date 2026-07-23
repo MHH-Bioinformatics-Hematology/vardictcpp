@@ -22,6 +22,7 @@ struct Config {
     double freq = 0.01;       // -f  (0 keeps every position with >=1 alt read)
     int minReads = 2;         // -r  minimum alt reads to call (conf.minr)
     int minBiasReads = 2;     // -B  minimum reads per strand for the strand-bias flag
+    double bias = 0.05;       // conf.bias: per-strand fraction cutoff for the strand-bias flag
     double mapqMin = 0;       // -O  minimum mapping quality (read filter AND isGoodVar threshold)
     double goodq = 22.5;      // -q  base-quality boundary for hi/lo-quality counting + isGoodVar
     int readPosFilter = 5;    // -P  minimum mean read position (isGoodVar)

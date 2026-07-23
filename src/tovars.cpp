@@ -7,12 +7,12 @@ namespace vardict {
 
 // VarDict strand-bias flag (data/VariationUtils.strandBias). 0 = one strand only / too few,
 // 1 = biased, 2 = both strands well represented.
-static int strandBias(int fwd, int rev, int minBiasReads) {
+static int strandBias(int fwd, int rev, int minBiasReads, double bias) {
     if (fwd + rev <= 12) {
         return (fwd > 0 && rev > 0) ? 2 : 0;
     }
     double tot = fwd + rev;
-    bool ok = (fwd / tot >= 0.01) && (rev / tot >= 0.01) && fwd >= minBiasReads && rev >= minBiasReads;
+    bool ok = (fwd / tot >= bias) && (rev / tot >= bias) && fwd >= minBiasReads && rev >= minBiasReads;
     return ok ? 2 : 1;
 }
 
@@ -176,8 +176,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             var.qratio = v.lowQualityReadsCount > 0
                        ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                        : (double)v.highQualityReadsCount / 0.5; // hi/lo signal-to-noise
-            var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads))
-                     + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads));
+            var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+                     + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias));
             var.duprate = vd.duprate();
 
             if (allele.find('&') != std::string::npos) {   // MNV / complex (e.g. "A&CG" -> ACG)
@@ -353,8 +353,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.qratio = v.lowQualityReadsCount > 0
                            ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                            : (double)v.highQualityReadsCount / 0.5;
-                var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads))
-                         + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads));
+                var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads, cfg.bias))
+                         + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(position + i);
                 if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
