@@ -139,6 +139,25 @@ void modifyCigar(int& position, Cig& cig, std::string& seq, std::vector<int>& qu
         cig.insert(cig.begin(), {s + m + (isI ? d : 0), 'S'});
     }
 
+    // beginDigitMNumberIorDNumberM: ^(\d)M(\d+)([ID])(\d+)M -- a 1-9bp leading match before an indel.
+    // Fold the short leading match (+ inserted bases) into a soft-clip, advance the reference
+    // position past the match (+ deleted bases), then extend the soft-clip over any leading
+    // MISMATCHES of the following match. (CigarModifier.java:771)
+    if (cig.size() >= 3 && cig[0].second == 'M' && cig[0].first <= 9 &&
+        (cig[1].second == 'I' || cig[1].second == 'D') && cig[2].second == 'M') {
+        int tmid = cig[0].first, indl = cig[1].first, mlen = cig[2].first;
+        bool isI = (cig[1].second == 'I');
+        int tslen = tmid + (isI ? indl : 0);
+        position += tmid + (isI ? 0 : indl);
+        int tn = 0;
+        while (tn < mlen && tslen + tn < (int)seq.size() && ref.has(position + tn)
+               && ref.at(position + tn) != seq[tslen + tn]) tn++;
+        tslen += tn; mlen -= tn; position += tn;
+        cig.erase(cig.begin(), cig.begin() + 3);
+        cig.insert(cig.begin(), {mlen, 'M'});
+        cig.insert(cig.begin(), {tslen, 'S'});
+    }
+
     // Reads with (remaining) indels are left to the (un-ported) indel-collapse loop.
     if (countIndel(cig) > 0) return;
 

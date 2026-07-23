@@ -265,8 +265,12 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     v.meanMappingQuality += mapq;
                     v.numberOfMismatches += nm;
                     v.highQualityReadsCount++;
-                    // VarDict's processDeletion does NOT add reference coverage for the deleted span.
                 }
+                // addVariationForDeletion (CigarParser.java:1791): "increase coverage count for
+                // reference bases missing from the read" -- a deletion read counts toward total
+                // position coverage at every deleted base, so Depth at the deletion includes it.
+                for (int i = 0; i < len; ++i)
+                    if (rpos + i >= rlo && rpos + i <= rhi) out.refCoverage[rpos + i]++;
                 rpos += len;
                 break;
             }
