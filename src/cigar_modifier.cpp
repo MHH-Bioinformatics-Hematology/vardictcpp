@@ -158,6 +158,23 @@ void modifyCigar(int& position, Cig& cig, std::string& seq, std::vector<int>& qu
         cig.insert(cig.begin(), {tslen, 'S'});
     }
 
+    // NUMBER_IorD_DIGIT_M_END: (\d+)([ID])(\d)M$ -- a trailing indel followed by a 1-9 bp match.
+    // The short trailing match after an indel is an unreliable anchor, so VarDict folds the indel
+    // plus the short match into a single trailing soft-clip (inserted bases add to the clip length,
+    // deleted bases are dropped) and lets the realigner re-find the indel from the clip if it is
+    // real. Must run BEFORE the countIndel guard so the resulting ..M##S can then be re-matched by
+    // captureMisSoftlyMS (e.g. 144M2D6M -> 144M6S -> 145M5S). (CigarModifier.java:186)
+    if (cig.size() >= 2 && isM(cig.back().second) && cig.back().first <= 9 &&
+        (cig[cig.size() - 2].second == 'I' || cig[cig.size() - 2].second == 'D')) {
+        int mlen = cig.back().first;
+        bool isI = (cig[cig.size() - 2].second == 'I');
+        int indl = cig[cig.size() - 2].first;
+        int tslen = mlen + (isI ? indl : 0);
+        cig.pop_back();                 // trailing 1-9 bp M
+        cig.pop_back();                 // the indel
+        cig.push_back({tslen, 'S'});
+    }
+
     // Reads with (remaining) indels are left to the (un-ported) indel-collapse loop.
     if (countIndel(cig) > 0) return;
 
