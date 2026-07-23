@@ -163,6 +163,11 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 // Adjacent-indel bridging within an M-segment (the '^'/'#'/'-N&' grammar) is not
                 // grown here; those complex cases are left to the I/D handlers.
                 int i = 0;
+                // nmoff accumulates over the WHOLE M-segment (declared once, like CigarParser.java):
+                // each consecutive-mismatch base absorbed into an MNV increments it, and every
+                // variation in this segment contributes (nm - nmoff) so the read's per-base mismatches
+                // that were merged into an MNV are not double-counted as "other" mismatches.
+                int nmoff = 0;
                 while (i < len) {
                     int gref = rpos + i;         // moving reference position (VarDict 'start')
                     int gq   = qpos + i;         // moving query offset (incl. soft-clip)
@@ -184,6 +189,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                         if (ref_.at(gref + 1) != nuc) {           // next base also mismatches
                             ss += nuc; q += bqual[gq + 1]; qbases++;
                             gq++; gref++; grpe++; i++;
+                            nmoff++;                              // CigarParser.java: nmoff++ per absorbed consecutive mismatch
                         } else {                                  // bridge matching bases to next mismatch within vext
                             int ssn = 0;
                             for (int ssi = 1; ssi <= cfg_.vext; ssi++) {
@@ -209,7 +215,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                         v.meanPosition += tp;
                         v.meanQuality += qavg;
                         v.meanMappingQuality += mapq;
-                        v.numberOfMismatches += nm;
+                        v.numberOfMismatches += nm - nmoff;      // subtract mismatches merged into MNVs earlier in this segment
                         v.pp = tp; v.pq = qavg;
                         if (qavg >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
                         // reference coverage for every base covered by this variation
