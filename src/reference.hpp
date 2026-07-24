@@ -37,6 +37,7 @@ public:
     // k-mer -> reference positions (SEED_1=17 and SEED_2=12), built over the loaded window.
     // Mirrors ReferenceResource.addPositionsToSeedSequence; used by findMatch for SV breakpoints.
     const std::vector<int>* seedPositions(const std::string& kmer) const {
+        if (!seedBuilt_) buildSeed();
         auto it = seed_.find(kmer);
         return it == seed_.end() ? nullptr : &it->second;
     }
@@ -44,12 +45,16 @@ public:
     static constexpr int SEED_2 = 12;
 
 private:
-    void buildSeed();
+    void buildSeed() const;
     faidx_t* fai_ = nullptr;
     std::string seq_;
     std::string loadedChr_;
     int loadedStart_ = 1;
-    std::unordered_map<std::string, std::vector<int>> seed_;
+    // Seed index is built lazily on first seedPositions() query and invalidated whenever the loaded
+    // window changes. Most regions never hit the SV/large-indel realignment paths that consume it, so
+    // eager construction (a heap std::string per k-mer position) was pure per-region overhead.
+    mutable bool seedBuilt_ = false;
+    mutable std::unordered_map<std::string, std::vector<int>> seed_;
 };
 
 } // namespace vardict

@@ -137,19 +137,17 @@ static void prepareSVDel(const bam1_t* b, const Cig& cigv, int start,
 }
 
 bool CigarParser::process(const Region& region, VariationData& out) {
-    samFile* fp = sam_open(cfg_.bam.c_str(), "r");
-    if (!fp) throw std::runtime_error("cannot open BAM " + cfg_.bam);
-    hts_idx_t* idx = sam_index_load(fp, cfg_.bam.c_str());
-    if (!idx) throw std::runtime_error("cannot load BAM index for " + cfg_.bam + " (run `samtools index`)");
-    bam_hdr_t* hdr = sam_hdr_read(fp);
-    if (!hdr) throw std::runtime_error("cannot read BAM header");
+    // File/index/header are opened once per worker thread (BamReader) and reused across all regions.
+    samFile*    fp  = bam_.fp();
+    hts_idx_t*  idx = bam_.idx();
+    bam_hdr_t*  hdr = bam_.hdr();
 
     int tid = bam_name2id(hdr, region.chr.c_str());
     if (tid < 0) { // try toggling chr prefix
         std::string alt = (region.chr.rfind("chr", 0) == 0) ? region.chr.substr(3) : "chr" + region.chr;
         tid = bam_name2id(hdr, alt.c_str());
     }
-    if (tid < 0) { bam_hdr_destroy(hdr); hts_idx_destroy(idx); sam_close(fp); return true; }
+    if (tid < 0) { return true; }
 
     out.chrLen = hdr->target_len[tid];
     // Fetch reads overlapping the region (htslib is 0-based, end-exclusive).
@@ -520,9 +518,6 @@ bool CigarParser::process(const Region& region, VariationData& out) {
 
     bam_destroy1(b);
     hts_itr_destroy(it);
-    bam_hdr_destroy(hdr);
-    hts_idx_destroy(idx);
-    sam_close(fp);
     return true;
 }
 

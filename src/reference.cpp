@@ -27,6 +27,7 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
         // Region outside contig / not found: leave empty so at() returns 'N'.
         seq_.clear();
         loadedStart_ = s;
+        seedBuilt_ = false;
         if (raw) free(raw);
         return;
     }
@@ -34,8 +35,8 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
     for (auto& c : seq_) c = (char)std::toupper((unsigned char)c);
     loadedStart_ = s;
     loadedChr_ = chr;
+    seedBuilt_ = false;
     free(raw);
-    buildSeed();
 }
 
 void Reference::ensure(int start, int end) {
@@ -46,8 +47,9 @@ void Reference::ensure(int start, int end) {
     load(loadedChr_, s, e, 0);
 }
 
-void Reference::buildSeed() {
+void Reference::buildSeed() const {
     seed_.clear();
+    seedBuilt_ = true;
     int n = (int)seq_.size();
     for (int i = 0; i + SEED_1 <= n; ++i)
         seed_[seq_.substr(i, SEED_1)].push_back(i + loadedStart_);

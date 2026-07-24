@@ -1,12 +1,45 @@
 #pragma once
 #include <map>
 #include <string>
+#include <stdexcept>
+#include <htslib/sam.h>
 #include "config.hpp"
 #include "region.hpp"
 #include "reference.hpp"
 #include "variation.hpp"
 
 namespace vardict {
+
+// Reusable BAM handle: opens the file, loads the index, and reads the header ONCE, then serves many
+// per-region iterator queries. VarDictJava (htsjdk) keeps a single SamReader open for the whole run;
+// the previous port re-ran sam_open/sam_index_load/sam_hdr_read for every region, so loading and
+// parsing the (potentially large) .bai on each of ~20k regions dominated the wall time. One per worker
+// thread — htslib file/index/header handles are not shared across threads.
+class BamReader {
+public:
+    explicit BamReader(const std::string& bamPath) {
+        fp_ = sam_open(bamPath.c_str(), "r");
+        if (!fp_) throw std::runtime_error("cannot open BAM " + bamPath);
+        idx_ = sam_index_load(fp_, bamPath.c_str());
+        if (!idx_) throw std::runtime_error("cannot load BAM index for " + bamPath + " (run `samtools index`)");
+        hdr_ = sam_hdr_read(fp_);
+        if (!hdr_) throw std::runtime_error("cannot read BAM header");
+    }
+    ~BamReader() {
+        if (hdr_) bam_hdr_destroy(hdr_);
+        if (idx_) hts_idx_destroy(idx_);
+        if (fp_) sam_close(fp_);
+    }
+    BamReader(const BamReader&) = delete;
+    BamReader& operator=(const BamReader&) = delete;
+    samFile*    fp()  const { return fp_; }
+    hts_idx_t*  idx() const { return idx_; }
+    bam_hdr_t*  hdr() const { return hdr_; }
+private:
+    samFile*   fp_  = nullptr;
+    hts_idx_t* idx_ = nullptr;
+    bam_hdr_t* hdr_ = nullptr;
+};
 
 // Per-region variation data (mirrors data/scopedata/VariationData.java, counting subset).
 struct VariationData {
@@ -38,7 +71,7 @@ struct VariationData {
 // yet implemented (documented in README) and so indel realignment adjustments are absent.
 class CigarParser {
 public:
-    CigarParser(const Config& cfg, Reference& ref) : cfg_(cfg), ref_(ref) {}
+    CigarParser(const Config& cfg, Reference& ref, BamReader& bam) : cfg_(cfg), ref_(ref), bam_(bam) {}
 
     // Fills `out` for the given region. Returns false on I/O error.
     bool process(const Region& region, VariationData& out);
@@ -46,6 +79,7 @@ public:
 private:
     const Config& cfg_;
     Reference& ref_;
+    BamReader& bam_;
 };
 
 } // namespace vardict

@@ -182,12 +182,13 @@ int main(int argc, char** argv) {
         auto segments = buildAmpRegions(raws, c);
         if (c.printHeader) printAmpliconHeader(stdout);
         Reference ref(c.ref);
+        BamReader bam(c.bam);
         for (auto& seg : segments) {
             std::vector<std::map<int, AmpVars>> vars;
             for (auto& region : seg) {
                 ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
                 VariationData vd;
-                CigarParser(c, ref).process(region, vd);
+                CigarParser(c, ref, bam).process(region, vd);
                 adjustMNP(vd, ref, c, region);
                 realigndel(vd, ref, c, region, vd.maxReadLength);
                 realignins(vd, ref, c, region, vd.maxReadLength);
@@ -232,12 +233,12 @@ int main(int argc, char** argv) {
     // Process one region into a fresh output buffer. Each call uses its own Reference/CigarParser so
     // it is safe to run concurrently (htslib faidx/BAM handles are not shared across threads). vd is
     // released at the end of the call, so per-region memory never accumulates.
-    auto processRegion = [&](const Region& region, Reference& ref) {
+    auto processRegion = [&](const Region& region, Reference& ref, BamReader& bam) {
         // VarDict loads reference with numberNucleotideToExtend + referenceExtension(1200) padding;
         // realignment flanks + the seed index for findMatch need this wider window.
         ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
         VariationData vd;
-        CigarParser(c, ref).process(region, vd);
+        CigarParser(c, ref, bam).process(region, vd);
         // Realignment order mirrors VariationRealigner: filterAllSVStructures (collapse discordant-pair
         // SV clusters) runs first, then adjustMNP, then realigndel, realignins, realignlgdel, ...
         if (!c.disableSV) filterSVStructures(vd, vd.maxReadLength);
@@ -269,7 +270,8 @@ int main(int argc, char** argv) {
     int nthreads = std::max(1, std::min(c.threads, nreg));
     if (nthreads == 1) {
         Reference ref(c.ref);
-        for (const auto& region : regions) std::fputs(processRegion(region, ref).c_str(), stdout);
+        BamReader bam(c.bam);
+        for (const auto& region : regions) std::fputs(processRegion(region, ref, bam).c_str(), stdout);
         return 0;
     }
 
@@ -285,9 +287,10 @@ int main(int argc, char** argv) {
 
     auto worker = [&]() {
         Reference ref(c.ref); // per-thread faidx handle
+        BamReader bam(c.bam); // per-thread BAM file/index/header handle
         int i;
         while ((i = nextWork.fetch_add(1)) < nreg) {
-            std::string buf = processRegion(regions[i], ref);
+            std::string buf = processRegion(regions[i], ref, bam);
             std::lock_guard<std::mutex> lk(m);
             results[i] = std::move(buf);
             done[i] = 1;
