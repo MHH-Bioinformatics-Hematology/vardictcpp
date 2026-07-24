@@ -30,6 +30,7 @@ add_executable(vardictcpp
   src/printer.cpp
   src/fisher.cpp
   src/somatic.cpp
+  src/amplicon.cpp
 )
 find_package(Threads REQUIRED)
 target_include_directories(vardictcpp PRIVATE ${HTS_INCLUDE_DIR} src)

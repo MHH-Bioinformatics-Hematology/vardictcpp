@@ -10,6 +10,10 @@ struct Region {
     int start = 0;
     int end = 0;
     std::string gene;
+    // Amplicon mode only (data/Region.java insertStart/insertEnd = BED thickStart/thickEnd). The insert
+    // is the amplicon's on-target interval; positions outside it are primer/flank and not reported.
+    int insertStart = 0;
+    int insertEnd = 0;
 };
 
 // Split regions longer than chunkSize into consecutive windows (mirrors the Java --chunk change),

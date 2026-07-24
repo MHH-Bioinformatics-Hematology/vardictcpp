@@ -52,6 +52,12 @@ struct Config {
     bool printHeader = false; // -h
     bool fisher = false;      // --fisher : add strand-bias Fisher exact p-value + odds-ratio columns
     int chunkSize = 0;        // --chunk : split long regions into windows (bounds memory)
+    // Amplicon (multiplex) mode: -a EDGE:FRACTION (GlobalReadOnlyScope.ampliconBasedCalling). A read is
+    // assigned to an amplicon only if its aligned edges are within EDGE bp of the amplicon boundaries
+    // and its overlap fraction with the amplicon exceeds FRACTION (CigarParser.parseCigarWithAmpCase).
+    bool amplicon = false;
+    int ampEdge = 10;             // distanceToAmplicon (split[0])
+    double ampFraction = 0.95;    // overlapFraction    (split[1])
 };
 
 } // namespace vardict

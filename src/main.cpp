@@ -21,6 +21,7 @@
 #include "tovars.hpp"
 #include "printer.hpp"
 #include "somatic.hpp"
+#include "amplicon.hpp"
 
 using namespace vardict;
 
@@ -34,7 +35,7 @@ static void usage() {
       "  Accepted (parsed, VarDict-compatible; not all affect output yet): -A -M -Q -T -V -W -w -Y\n"
       "            -Z -d -e -n -s -v -y -3 -C -D -K -U -UN -j -J -DP -VS -adaptor -deldupvar -m\n"
       "  Somatic (paired) mode: -b 'tumor|normal' -N 'tumor|normal' (55-column output)\n"
-      "  Not implemented (errors): -a/--amplicon\n"
+      "  Amplicon (multiplex) mode: -a EDGE:FRACTION with an 8-column amplicon BED (38-column output)\n"
       "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n");
 }
 
@@ -105,8 +106,18 @@ int main(int argc, char** argv) {
     auto has = [&](const char* k){ return opt.count(k) != 0; };
     auto val = [&](const char* k, const char* d){ auto it = opt.find(k); return it == opt.end() ? std::string(d) : it->second; };
 
-    // Modes this port does not implement -> refuse rather than emit wrong output.
-    if (has("a")) { std::fprintf(stderr, "vardictcpp: amplicon mode (-a) is not implemented\n"); return 2; }
+    // Amplicon (multiplex) mode: -a EDGE:FRACTION (GlobalReadOnlyScope.ampliconBasedCalling).
+    if (has("a")) {
+        c.amplicon = true;
+        std::string a = opt["a"];
+        auto colon = a.find(':');
+        // Java: distanceToAmplicon = toInt(split[0]); overlapFraction = parseDouble(split[1]);
+        // on NumberFormatException it falls back to 10 / 0.95.
+        try {
+            c.ampEdge = std::stoi(colon == std::string::npos ? a : a.substr(0, colon));
+            c.ampFraction = std::stod(colon == std::string::npos ? std::string() : a.substr(colon + 1));
+        } catch (...) { c.ampEdge = 10; c.ampFraction = 0.95; }
+    }
     c.fisher = has("fisher");
 
     c.ref = val("G", "");
@@ -160,6 +171,38 @@ int main(int argc, char** argv) {
     bool zeroBasedSet = has("z");
     if (!positional.empty()) c.bed = positional[0];
     if (c.ref.empty() || c.bam.empty()) { usage(); return 1; }
+
+    // Amplicon (multiplex) mode: process by segment, comparing calls across overlapping amplicons.
+    if (c.amplicon) {
+        if (c.bed.empty()) { std::fprintf(stderr, "vardictcpp: amplicon mode (-a) requires a BED file\n"); return 1; }
+        std::ifstream bin(c.bed);
+        if (!bin) { std::fprintf(stderr, "cannot open BED %s\n", c.bed.c_str()); return 1; }
+        std::vector<std::string> raws; std::string line;
+        while (std::getline(bin, line)) if (!line.empty() && line[0] != '#') raws.push_back(line);
+        auto segments = buildAmpRegions(raws, c);
+        if (c.printHeader) printAmpliconHeader(stdout);
+        Reference ref(c.ref);
+        for (auto& seg : segments) {
+            std::vector<std::map<int, AmpVars>> vars;
+            for (auto& region : seg) {
+                ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
+                VariationData vd;
+                CigarParser(c, ref).process(region, vd);
+                adjustMNP(vd, ref, c, region);
+                realigndel(vd, ref, c, region, vd.maxReadLength);
+                realignins(vd, ref, c, region, vd.maxReadLength);
+                realignlgdel(vd, ref, c, region, vd.maxReadLength);
+                realignlgins30(vd, ref, c, region, vd.maxReadLength);
+                realignlgins(vd, ref, c, region, vd.maxReadLength);
+                adjSNV(vd, ref);
+                vars.push_back(buildAmpVars(c, region, vd, ref));
+            }
+            std::string buf;
+            appendAmpliconSegment(buf, c, seg, vars);
+            std::fputs(buf.c_str(), stdout);
+        }
+        return 0;
+    }
 
     // Build regions.
     std::vector<Region> regions;

@@ -4,6 +4,8 @@
 #include <htslib/sam.h>
 #include <htslib/hts.h>
 #include <cstring>
+#include <cstdlib>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 
@@ -112,6 +114,50 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         // VarDict (CigarParser): "reads with mismatches more than INT will be filtered and ignored"
         // (gaps not counted). Skip the whole read when NM - indels exceeds -m (default 8).
         if (haveNM && nm > cfg_.mismatch) continue;
+
+        // Amplicon read-assignment (CigarParser.parseCigarWithAmpCase): keep a read only if it belongs
+        // to THIS amplicon (region == the amplicon interval). Applied here, before maxReadLength/counting,
+        // matching Java's order (NM filter -> amp check -> modifyCigar -> maxReadLength). Uses the ORIGINAL
+        // cigar. Returns skip=true to drop the read.
+        if (cfg_.amplicon) {
+            const int distanceToAmplicon = cfg_.ampEdge;
+            const double overlapFraction = cfg_.ampFraction;
+            const uint32_t* acg = bam_get_cigar(b);
+            // getAlignedLength: sum of M and D lengths (aligned length, excl. soft-clip and insertion).
+            int alignedLen = 0;
+            for (uint32_t k = 0; k < c.n_cigar; ++k) {
+                int op = bam_cigar_op(acg[k]);
+                if (op == BAM_CMATCH || op == BAM_CDEL) alignedLen += (int)bam_cigar_oplen(acg[k]);
+            }
+            int segstart = c.pos + 1;                 // record.getAlignmentStart(), 1-based
+            int segend = segstart + alignedLen - 1;
+            int firstOp = bam_cigar_op(acg[0]);
+            int lastOp  = bam_cigar_op(acg[c.n_cigar - 1]);
+            bool skip = false;
+            if (firstOp == BAM_CSOFT_CLIP) {
+                int ts1 = segstart > region.start ? segstart : region.start;
+                int te1 = segend < region.end ? segend : region.end;
+                if (!(std::abs(ts1 - te1) / (double)(segend - segstart) > overlapFraction)) skip = true;
+            } else if (lastOp == BAM_CSOFT_CLIP) {
+                int ts1 = segstart > region.start ? segstart : region.start;
+                int te1 = segend < region.end ? segend : region.end;
+                if (!(std::abs(te1 - ts1) / (double)(segend - segstart) > overlapFraction)) skip = true;
+            } else { // no soft-clipping: use mate/TLEN to bound the fragment
+                bool isMateReferenceNameEqual = (c.mtid == c.tid);
+                if (isMateReferenceNameEqual && c.isize != 0) {
+                    if (c.isize > 0) segend = segstart + c.isize - 1;
+                    else { segstart = c.mpos + 1; segend = c.mpos + 1 - c.isize - 1; }
+                }
+                int ts1 = segstart > region.start ? segstart : region.start;
+                int te1 = segend < region.end ? segend : region.end;
+                if ((std::abs(segstart - region.start) > distanceToAmplicon ||
+                     std::abs(segend - region.end) > distanceToAmplicon)
+                    || std::fabs((ts1 - te1) / (double)(segend - segstart)) <= overlapFraction) {
+                    skip = true;
+                }
+            }
+            if (skip) continue;
+        }
 
         out.totalReads++;
         if (c.l_qseq > out.maxReadLength) out.maxReadLength = c.l_qseq;
