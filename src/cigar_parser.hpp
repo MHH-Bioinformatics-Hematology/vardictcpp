@@ -18,6 +18,12 @@ struct VariationData {
     std::map<int, std::map<std::string,int>> positionToDeletionCount;  // pos -> "-N" -> count
     std::map<int, Sclip> softClips5End;         // 5' soft-clip consensus per position
     std::map<int, Sclip> softClips3End;         // 3' soft-clip consensus per position
+    // Structural-variant clusters (data/SVStructures.java): discordant read-pair deletion clusters,
+    // forward (svfdel) / reverse (svrdel), plus their rolling right edges. Only the DEL discordant
+    // path is collected/processed (findDELdisc); DUP/INV/fusion clusters are not built yet.
+    std::vector<Sclip> svfdel, svrdel;
+    int  svdelfend = 0, svdelrend = 0;
+    std::map<int, SVInfo> svInfoAt;             // position -> SV marker (pairs/splits/clusters)
     int  maxReadLength = 0;
     int  chrLen = 0;            // length of the region's contig (for breakpoint bounds)
     long totalReads = 0;

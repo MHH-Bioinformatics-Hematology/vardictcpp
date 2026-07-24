@@ -50,6 +50,92 @@ static inline void addCnt(Variation& v, bool dir, int readPosition, double baseQ
     if (baseQuality >= goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
 }
 
+// CigarParser.addSV: fold one discordant read pair into an SV (deletion) cluster and record its Mate.
+static void addSVMate(Sclip& sd, int start_s, int end_e, int mateStart_ms, int mateEnd_me,
+                      int dir, int rlen, int mlen, int softp, double pmean_rp, double qmean,
+                      double Qmean, double nm, double goodq) {
+    sd.varsCount++;
+    sd.incDir(dir == 1 ? false : true);
+    if (qmean >= goodq) sd.highQualityReadsCount++; else sd.lowQualityReadsCount++;
+    if (sd.start == 0 || sd.start >= start_s) sd.start = start_s;
+    if (sd.end == 0 || sd.end <= end_e) sd.end = end_e;
+    Mate m; m.mateStart_ms = mateStart_ms; m.mateEnd_me = mateEnd_me; m.mateLength_mlen = mlen;
+    m.start_s = start_s; m.end_e = end_e; m.pmean_rp = pmean_rp; m.qmean_q = qmean; m.Qmean_Q = Qmean; m.nm = nm;
+    sd.mates.push_back(m);
+    if (sd.mstart == 0 || sd.mstart >= mateStart_ms) sd.mstart = mateStart_ms;
+    if (sd.mend == 0 || sd.mend <= mateEnd_me) sd.mend = mateStart_ms + rlen; // NB: mateStart+rlen, not mateEnd_me (VarDict addSV:2322)
+    if (softp != 0) {
+        if (dir == 1) { if (std::abs(softp - sd.end) < 10) sd.soft[softp]++; }
+        else          { if (std::abs(softp - sd.start) < 10) sd.soft[softp]++; }
+    }
+}
+
+// CigarParser.prepareSVStructuresForAnalysis, DELETION (svfdel/svrdel) path only. Records a
+// same-chromosome discordant read pair whose orientation + oversized insert signal a deletion into the
+// forward/reverse DEL cluster list, opening a new cluster when the read is > MINSVCDIST*maxReadLength
+// past the last one. DUP/INV/inter-chromosome classification is not ported (no golden), so only the DEL
+// disc-count bumps are applied; that can only lower a DEL cluster's disc, never change its membership.
+static void prepareSVDel(const bam1_t* b, const Cig& cigv, int start,
+                         const std::vector<int>& bqual, int lqseq, bool reverse,
+                         double nm, VariationData& out, const Config& cfg) {
+    const bam1_core_t& c = b->core;
+    if (c.mtid != c.tid) return; // getMateReferenceName == "=" (same chr); inter-chr not ported
+    int totalLen = 0, alnMND = 0;
+    for (auto& e : cigv) {
+        char op = e.second;
+        if (op=='M'||op=='I'||op=='S'||op=='='||op=='X') totalLen += e.first;
+        if (op=='M'||op=='N'||op=='D') alnMND += e.first;
+    }
+    int end = start + alnMND;
+    int mateStart = c.mpos + 1;
+    int mend = mateStart + totalLen;
+    int soft5 = 0, soft3 = 0;
+    if (!cigv.empty() && cigv.front().second == 'S') {
+        int tt = cigv.front().first;
+        if (tt != 0 && tt - 1 < lqseq && bqual[tt - 1] > cfg.goodq) soft5 = start;
+    }
+    if (!cigv.empty() && cigv.back().second == 'S') {
+        int tt = cigv.back().first;
+        if (tt != 0 && lqseq - tt >= 0 && lqseq - tt < lqseq && bqual[lqseq - tt] > cfg.goodq) soft3 = end;
+    }
+    int readDirNum = reverse ? -1 : 1;
+    bool mateForward = (c.flag & 0x20) == 0;
+    int mateDirNum = mateForward ? 1 : -1;
+    long mlen = c.isize;
+    if (uint8_t* mc = bam_aux_get(const_cast<bam1_t*>(b), "MC")) {
+        const char* s = bam_aux2Z(mc);
+        if (s) { int cntS = 0; for (const char* p = s; *p; ++p) if (*p == 'S') cntS++; if (cntS >= 2) return; }
+    }
+    if (uint8_t* mq = bam_aux_get(const_cast<bam1_t*>(b), "MQ")) {
+        if ((int)bam_aux2i(mq) < 15) return;
+    }
+    if (readDirNum * mateDirNum == -1 && (mlen * readDirNum) > 0 && lqseq > Config::MINMAPBASE) {
+        mlen = mateStart > start ? (long)mend - start : (long)end - mateStart;
+        if (std::labs(mlen) > (long)cfg.INSSIZE + (long)cfg.INSSTDAMT * cfg.INSSTD) {
+            double qAtBase = bqual[Config::MINMAPBASE];
+            double Qmean = c.qual;
+            double pmean = out.maxReadLength / 2.0;
+            if (readDirNum == 1) {
+                if (out.svfdel.empty() || start - out.svdelfend > Config::MINSVCDIST * out.maxReadLength)
+                    { Sclip sc; sc.varsCount = 0; out.svfdel.push_back(sc); }
+                addSVMate(out.svfdel.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                          (int)mlen, soft3, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                out.svdelfend = end;
+            } else {
+                if (out.svrdel.empty() || start - out.svdelrend > Config::MINSVCDIST * out.maxReadLength)
+                    { Sclip sc; sc.varsCount = 0; out.svrdel.push_back(sc); }
+                addSVMate(out.svrdel.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                          (int)mlen, soft5, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                out.svdelrend = end;
+            }
+            if (!out.svfdel.empty() && std::abs(start - out.svdelfend) <= Config::MINSVCDIST * out.maxReadLength)
+                out.svfdel.back().disc++;
+            if (!out.svrdel.empty() && std::abs(start - out.svdelrend) <= Config::MINSVCDIST * out.maxReadLength)
+                out.svrdel.back().disc++;
+        }
+    }
+}
+
 bool CigarParser::process(const Region& region, VariationData& out) {
     samFile* fp = sam_open(cfg_.bam.c_str(), "r");
     if (!fp) throw std::runtime_error("cannot open BAM " + cfg_.bam);
@@ -184,6 +270,17 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         for (uint32_t k = 0; k < c.n_cigar; ++k) cigv.push_back({(int)bam_cigar_oplen(rawcig[k]), OPS[bam_cigar_op(rawcig[k])]});
         int rpos = c.pos + 1;   // 1-based reference position of current op
         if (cfg_.performLocalRealignment) modifyCigar(rpos, cigv, bseq, bqual, ref_, out.maxReadLength, cfg_);
+
+        // Structural-variant discordant-pair collection (CigarParser dispatch at 323-329): skip
+        // paired reads whose mate is unmapped (potential insertion, not ported); otherwise, for
+        // MAPQ>10 reads, record possible SV deletion clusters from the (post-modifyCigar) alignment.
+        if (!cfg_.disableSV) {
+            bool paired = (c.flag & BAM_FPAIRED) != 0;
+            bool mateUnmapped = (c.flag & BAM_FMUNMAP) != 0;
+            if (paired && mateUnmapped) { /* potential insertion: not ported */ }
+            else if (c.qual > 10) prepareSVDel(b, cigv, rpos, bqual, c.l_qseq, reverse, nm, out, cfg_);
+        }
+
         int qpos = 0;           // 0-based query offset (includes soft-clip)
 
         // VarDict read-position convention: position within the aligned read (M+I only, excluding

@@ -41,6 +41,13 @@ struct Mate {
     double pmean_rp=0, qmean_q=0, Qmean_Q=0, nm=0;
 };
 
+// collection/VariationMap.SV: per-position structural-variant marker (pairs/splits/clusters) that
+// ToVarsBuilder joins as "<splits>-<pairs>-<clusters>" into the SV_info output column.
+struct SVInfo {
+    std::string type;
+    int pairs=0, splits=0, clusters=0;
+};
+
 // variations/Sclip.java (extends Variation)
 struct Sclip : Variation {
     std::map<int, std::map<char,int>> nt;                          // pos -> base -> count

@@ -39,6 +39,7 @@ struct Variant {
     std::string rightseq;       // 3' flank
     std::string vartype = "SNV";
     double duprate = 0;
+    std::string svInfo;         // "<splits>-<pairs>-<clusters>" for structural variants, else empty ("0")
     // Somatic-mode only: the variant description string (allele map key, used for sort tie-break and
     // cross-sample matching) and whether it passes isGoodVar (with Java-rounded frequency).
     std::string descriptionString;

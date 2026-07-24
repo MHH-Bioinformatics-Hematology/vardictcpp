@@ -17,6 +17,12 @@ public:
     // Load reference window for [start,end] (1-based) with `pad` extra bases on each side.
     void load(const std::string& chr, int start, int end, int pad);
 
+    // Ensure [start,end] (1-based inclusive) is covered by the loaded window, expanding the loaded
+    // seq to the union [min(start,loadedStart), max(end,loadedEnd)] if needed. Mirrors VarDict's
+    // ReferenceResource.getReference merging additional windows into referenceSequences (used by the
+    // SV path to pull in a far-off deletion breakpoint outside the region window).
+    void ensure(int start, int end);
+
     // 1-based reference base at position p (uppercase); returns 'N' if outside the loaded window.
     char at(int p) const {
         int i = p - loadedStart_;
@@ -41,6 +47,7 @@ private:
     void buildSeed();
     faidx_t* fai_ = nullptr;
     std::string seq_;
+    std::string loadedChr_;
     int loadedStart_ = 1;
     std::unordered_map<std::string, std::vector<int>> seed_;
 };

@@ -89,7 +89,9 @@ static std::string classifyType(const std::string& ref, const std::string& alt) 
     if (!alt.empty() && (alt.front() == '<' || alt[0] == '+' || alt[0] == '-')) {
         if (alt[0] == '+') return "Insertion";
         if (alt[0] == '-') return "Deletion";
-        return alt; // <DEL>/<DUP>/<INV>
+        // <DEL>/<DUP>/<INV>: Variant.varType extracts the 3-letter type between the angle brackets.
+        if (alt.size() >= 3 && alt.back() == '>') return alt.substr(1, alt.size() - 2);
+        return alt;
     }
     if (ref.empty() || alt.empty()) return "Complex";
     if (ref[0] != alt[0]) return "Complex";
@@ -104,7 +106,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
     const double freq = cfg.freq;
 
     for (const auto& [position, alleleMap] : vd.nonInsertionVariants) {
-        if (position < region.start || position > region.end) continue;
+        // A position carrying a structural-variant marker is emitted even outside the region window
+        // (ToVarsBuilder skips the region-bounds check when varsAtCurPosition.sv != null).
+        auto svIt = vd.svInfoAt.find(position);
+        bool isSVpos = svIt != vd.svInfoAt.end();
+        if (!isSVpos && (position < region.start || position > region.end)) continue;
         auto covIt = vd.refCoverage.find(position);
         if (covIt == vd.refCoverage.end() || covIt->second == 0) continue;
         int totalCov = covIt->second;
@@ -213,25 +219,40 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 //   varallele = ref[position-1];  refallele = ref[position-1] + ref[position..position+dl-1]
                 //   startPosition-- ; endPosition = position + dl - 1.
                 char anchor = ref.has(position - 1) ? ref.at(position - 1) : refBase;
-                std::string delseq;
-                for (int i = 0; i < dl; ++i) if (ref.has(position + i)) delseq += ref.at(position + i);
-                var.varallele = std::string(1, anchor);
-                var.refallele = std::string(1, anchor) + delseq;
                 var.startPosition = position - 1;
                 var.endPosition = position + dl - 1;
-                // proceedVrefIsDeletion: MSI over deleted unit vs flanks (leftseq = ref[p-70..p-1],
-                // tseq = ref[p..p+dl+70]; findMSI(tseq[0..dl), tseq[dl..], leftseq) vs without-left).
-                std::string leftseq, tseq;
-                for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
-                for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
-                std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
-                std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
-                MSIResult m = findMSI(t1, t2, leftseq);
-                MSIResult m2 = findMSI(leftseq, t2);
-                double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
-                if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; } // shift3 unchanged
-                if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
-                var.msi = msi; var.shift3 = shift3; var.msint = msint;
+                if (dl >= cfg.SVMINLEN) {
+                    // Structural deletion (deletionLength >= SVMINLEN): spelled "<DEL>". The <DEL>
+                    // special case (ToVarsBuilder 796-805) sets refallele to the single base at
+                    // startPosition and recomputes depth/frequency; no MSI (proceedVrefIsDeletion is
+                    // not called for SVs, so shift3/MSI stay 0).
+                    var.varallele = "<DEL>";
+                    var.refallele = ref.has(var.startPosition) ? std::string(1, ref.at(var.startPosition)) : "";
+                    int tpc = var.totalPosCoverage;
+                    auto cprev = vd.refCoverage.find(var.startPosition - 1);
+                    if (cprev != vd.refCoverage.end()) tpc = cprev->second;
+                    if (v.varsCount > tpc) tpc = v.varsCount;
+                    var.totalPosCoverage = tpc;
+                    var.frequency = tpc > 0 ? (double)v.varsCount / tpc : 0;
+                } else {
+                    std::string delseq;
+                    for (int i = 0; i < dl; ++i) if (ref.has(position + i)) delseq += ref.at(position + i);
+                    var.varallele = std::string(1, anchor);
+                    var.refallele = std::string(1, anchor) + delseq;
+                    // proceedVrefIsDeletion: MSI over deleted unit vs flanks (leftseq = ref[p-70..p-1],
+                    // tseq = ref[p..p+dl+70]; findMSI(tseq[0..dl), tseq[dl..], leftseq) vs without-left).
+                    std::string leftseq, tseq;
+                    for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
+                    for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
+                    std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
+                    std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
+                    MSIResult m = findMSI(t1, t2, leftseq);
+                    MSIResult m2 = findMSI(leftseq, t2);
+                    double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
+                    if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; } // shift3 unchanged
+                    if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
+                    var.msi = msi; var.shift3 = shift3; var.msint = msint;
+                }
             } else {                                    // SNV
                 var.refallele = std::string(1, refBase);
                 var.varallele = allele;
@@ -243,6 +264,10 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.msi = m.msi; var.shift3 = m.shift3; var.msint = m.msintLen;
             }
             var.vartype = classifyType(var.refallele, var.varallele);
+            // SV_info column ("<splits>-<pairs>-<clusters>", ToVarsBuilder line 428).
+            if (isSVpos) var.svInfo = std::to_string(svIt->second.splits) + "-" +
+                                      std::to_string(svIt->second.pairs) + "-" +
+                                      std::to_string(svIt->second.clusters);
             // VarDict genotype = genotype1 + "/" + genotype2 (ToVarsBuilder). genotype1 is the
             // *description string* of the reference base (when ref freq >= -f) else the dominant
             // variant; genotype2 is THIS allele's raw description: SNV -> base, deletion -> "-N",

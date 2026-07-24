@@ -109,7 +109,7 @@ static void appendVariantFisher(std::string& out, const Config& cfg, const Regio
         region.chr.c_str(), region.start, region.end,
         v.vartype.c_str(),
         dup.c_str(),
-        "0");  // SV_info
+        v.svInfo.empty() ? "0" : v.svInfo.c_str());  // SV_info
     out += buf;
 }
 
@@ -165,7 +165,7 @@ void appendVariant(std::string& out, const Config& cfg, const Region& region, co
         region.chr.c_str(), region.start, region.end,
         v.vartype.c_str(),
         dup.c_str(),
-        "0");  // SV_info: empty -> "0"
+        v.svInfo.empty() ? "0" : v.svInfo.c_str());  // SV_info: empty -> "0"
     out += buf;
 }
 

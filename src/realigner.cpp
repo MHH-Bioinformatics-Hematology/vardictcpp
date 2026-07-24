@@ -1098,4 +1098,166 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
     }
 }
 
+// ---- Structural variants: discordant-pair deletions ---------------------------------------------
+// Ports VariationRealigner.filterSV/checkCluster + StructuralVariantsProcessor.findDELdisc/markSV/
+// isOverlap for the DEL discordant-pair path. Turns svfdel/svrdel clusters into a <DEL> Variation at
+// the breakpoint plus an SVInfo (splits/pairs/clusters) marker consumed by callVariants.
+
+namespace {
+struct Cluster {
+    int mateStart_ms=0, mateEnd_me=0, cnt=0, mateLength_mlen=0, start_s=0, end_e=0;
+    double pmean_rp=0, qmean_q=0, Qmean_Q=0, nm=0;
+};
+
+// VariationRealigner.checkCluster: collapse a cluster's mates into the dominant sub-cluster (mates
+// grouped by mate start within MINSVCDIST*rlen). Returns an all-zero Cluster (mateStart_ms==0) when
+// the top sub-cluster holds < 60% of the mates.
+Cluster checkCluster(std::vector<Mate>& mates, int rlen) {
+    std::stable_sort(mates.begin(), mates.end(),
+                     [](const Mate& a, const Mate& b) { return a.mateStart_ms < b.mateStart_ms; });
+    std::vector<Cluster> clusters;
+    { const Mate& f = mates[0]; Cluster c; c.mateStart_ms=f.mateStart_ms; c.mateEnd_me=f.mateEnd_me;
+      c.start_s=f.start_s; c.end_e=f.end_e; clusters.push_back(c); }
+    int cur = 0;
+    for (const Mate& m : mates) {
+        if (m.mateStart_ms - clusters[cur].mateEnd_me > Config::MINSVCDIST * rlen) {
+            Cluster c; c.mateStart_ms=m.mateStart_ms; c.mateEnd_me=m.mateEnd_me;
+            c.start_s=m.start_s; c.end_e=m.end_e; clusters.push_back(c); cur++;
+        }
+        Cluster& g = clusters[cur];
+        g.cnt++;
+        g.mateLength_mlen += m.mateLength_mlen;
+        if (m.mateEnd_me > g.mateEnd_me) g.mateEnd_me = m.mateEnd_me;
+        if (m.start_s < g.start_s) g.start_s = m.start_s;
+        if (m.end_e > g.end_e) g.end_e = m.end_e;
+        g.pmean_rp += m.pmean_rp; g.qmean_q += m.qmean_q; g.Qmean_Q += m.Qmean_Q; g.nm += m.nm;
+    }
+    std::stable_sort(clusters.begin(), clusters.end(),
+                     [](const Cluster& a, const Cluster& b) { return a.cnt > b.cnt; });
+    const Cluster& fc = clusters[0];
+    Cluster res;
+    if (fc.cnt / (double)mates.size() >= 0.60) {
+        res = fc;
+        res.mateLength_mlen = fc.mateLength_mlen / fc.cnt;
+    }
+    return res;
+}
+
+void filterSVList(std::vector<Sclip>& list, int maxReadLength) {
+    for (auto& sv : list) {
+        if (sv.mates.empty()) { sv.used = true; continue; }
+        Cluster cl = checkCluster(sv.mates, maxReadLength);
+        if (cl.mateStart_ms != 0) {
+            sv.mstart = cl.mateStart_ms; sv.mend = cl.mateEnd_me; sv.varsCount = cl.cnt;
+            sv.mlen = cl.mateLength_mlen; sv.start = cl.start_s; sv.end = cl.end_e;
+            sv.meanPosition = cl.pmean_rp; sv.meanQuality = cl.qmean_q;
+            sv.meanMappingQuality = cl.Qmean_Q; sv.numberOfMismatches = cl.nm;
+        } else {
+            sv.used = true;
+        }
+        if (sv.disc != 0 && sv.varsCount / (double)sv.disc < 0.5) {
+            if (!(sv.varsCount / (double)sv.disc >= 0.35 && sv.varsCount >= 5)) sv.used = true;
+        }
+        // dominant soft-clip position (max count; lowest position on tie)
+        int bestp = 0, bestc = -1;
+        for (auto& [p, cnt] : sv.soft) if (cnt > bestc) { bestc = cnt; bestp = p; }
+        sv.softp = sv.soft.empty() ? 0 : bestp;
+    }
+}
+
+bool isOverlapSV(int s1, int e1, int s2, int e2, int rlen) {
+    if (s1 >= e2 || s2 >= e1) return false;
+    int p[4] = {s1, e1, s2, e2}; std::sort(p, p + 4);
+    int ins = p[2] - p[1];
+    if (e1 != s1 && e2 != s2 && ins / (double)(e1 - s1) > 0.75 && ins / (double)(e2 - s2) > 0.75) return true;
+    if ((p[1] - p[0]) + (p[3] - p[2]) < 3 * rlen) return true;
+    return false;
+}
+
+// StructuralVariantsProcessor.markSV: mark reciprocal-orientation clusters overlapping [start,end] used.
+void markSVDel(int start, int end, std::vector<Sclip>& list, int rlen) {
+    for (auto& sv_r : list) {
+        int s2, e2;
+        if (sv_r.start < sv_r.mstart) { s2 = sv_r.end; e2 = sv_r.mstart; }
+        else                          { s2 = sv_r.mend; e2 = sv_r.start; }
+        if (isOverlapSV(start, end, s2, e2, rlen)) sv_r.used = true;
+    }
+}
+} // anonymous namespace
+
+void filterSVStructures(VariationData& vd, int maxReadLength) {
+    filterSVList(vd.svfdel, maxReadLength);
+    filterSVList(vd.svrdel, maxReadLength);
+}
+
+void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+    (void)region;
+    auto& NIV = vd.nonInsertionVariants;
+    const int MINDIST = 8 * maxReadLength;
+
+    auto buildTv = [](const Sclip& del) {
+        Variation tv;
+        tv.varsCount = 2 * del.varsCount; tv.highQualityReadsCount = 2 * del.varsCount;
+        tv.varsCountOnForward = del.varsCount; tv.varsCountOnReverse = del.varsCount;
+        tv.meanQuality = 2 * del.meanQuality; tv.meanPosition = 2 * del.meanPosition;
+        tv.meanMappingQuality = 2 * del.meanMappingQuality; tv.numberOfMismatches = 2 * del.numberOfMismatches;
+        return tv;
+    };
+
+    // forward clusters (svfdel): (svfdel) --> | ........ | <-- (svrdel)
+    for (auto& del : vd.svfdel) {
+        if (del.used) continue;
+        if (del.varsCount < cfg.minReads + 5) continue;
+        if (del.mstart <= del.end + MINDIST) continue;
+        if (del.varsCount == 0 || del.meanMappingQuality / del.varsCount <= Config::DISCPAIRQUAL) continue;
+        int mlen = del.mstart - del.end - maxReadLength / (del.varsCount + 1);
+        if (!(mlen > 0 && mlen > MINDIST)) continue;
+        int bp = del.end + (maxReadLength / (del.varsCount + 1)) / 2;
+        if (del.softp != 0) bp = del.softp;
+        ref.ensure(bp - 150, bp + 150);
+        Variation& vref = getVariation(NIV, bp, "-" + std::to_string(mlen));
+        vref.varsCount = 0;
+        SVInfo& sv = vd.svInfoAt[bp];
+        sv.type = "DEL";
+        { auto it = vd.softClips3End.find(del.end + 1); if (it != vd.softClips3End.end()) sv.splits += it->second.varsCount; }
+        { auto it = vd.softClips5End.find(del.mstart);  if (it != vd.softClips5End.end())  sv.splits += it->second.varsCount; }
+        sv.pairs += del.varsCount;
+        sv.clusters++;
+        Variation tv = buildTv(del);
+        adjCnt(vref, tv);
+        if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = 2 * del.varsCount;
+        del.used = true;
+        markSVDel(del.end, del.mstart, vd.svrdel, maxReadLength);
+    }
+
+    // reverse clusters (svrdel)
+    for (auto& del : vd.svrdel) {
+        if (del.used) continue;
+        if (del.varsCount < cfg.minReads + 5) continue;
+        if (del.start <= del.mend + MINDIST) continue;
+        if (del.varsCount == 0 || del.meanMappingQuality / del.varsCount <= Config::DISCPAIRQUAL) continue;
+        int mlen = del.start - del.mend - maxReadLength / (del.varsCount + 1);
+        if (!(mlen > 0 && mlen > MINDIST)) continue;
+        int bp = del.mend + (maxReadLength / (del.varsCount + 1)) / 2;
+        ref.ensure(bp - 150, bp + 150);
+        Variation& vr = getVariation(NIV, bp, "-" + std::to_string(mlen));
+        vr.varsCount = 0;
+        SVInfo& sv = vd.svInfoAt[bp];
+        sv.type = "DEL";
+        { auto it = vd.softClips3End.find(del.mend + 1); if (it != vd.softClips3End.end()) sv.splits += it->second.varsCount; }
+        { auto it = vd.softClips5End.find(del.start);   if (it != vd.softClips5End.end())  sv.splits += it->second.varsCount; }
+        sv.pairs += del.varsCount;
+        sv.clusters += 1;
+        if (del.softp != 0) { auto it = vd.softClips5End.find(del.softp); if (it != vd.softClips5End.end()) it->second.used = true; }
+        Variation tv = buildTv(del);
+        adjCnt(vr, tv);
+        if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = 2 * del.varsCount;
+        if (vd.refCoverage.count(del.start) && vd.refCoverage[bp] < vd.refCoverage[del.start])
+            vd.refCoverage[bp] = vd.refCoverage[del.start];
+        del.used = true;
+        ref.ensure(del.mstart - 100, del.mend + 100);
+        markSVDel(del.mend, del.start, vd.svfdel, maxReadLength);
+    }
+}
+
 } // namespace vardict

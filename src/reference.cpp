@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 
 namespace vardict {
 
@@ -32,8 +33,17 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
     seq_.assign(raw, len);
     for (auto& c : seq_) c = (char)std::toupper((unsigned char)c);
     loadedStart_ = s;
+    loadedChr_ = chr;
     free(raw);
     buildSeed();
+}
+
+void Reference::ensure(int start, int end) {
+    if (loadedChr_.empty()) return;
+    if (start >= loadedStart_ && end <= loadedEnd()) return; // already covered
+    int s = std::min(start, loadedStart_); if (s < 1) s = 1;
+    int e = std::max(end, loadedEnd());
+    load(loadedChr_, s, e, 0);
 }
 
 void Reference::buildSeed() {

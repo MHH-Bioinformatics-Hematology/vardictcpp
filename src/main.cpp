@@ -238,14 +238,18 @@ int main(int argc, char** argv) {
         ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
         VariationData vd;
         CigarParser(c, ref).process(region, vd);
-        // Realignment order mirrors VariationRealigner: adjustMNP, then realigndel, realignins,
-        // realignlgdel (large-deletion soft-clip breakpoints).
+        // Realignment order mirrors VariationRealigner: filterAllSVStructures (collapse discordant-pair
+        // SV clusters) runs first, then adjustMNP, then realigndel, realignins, realignlgdel, ...
+        if (!c.disableSV) filterSVStructures(vd, vd.maxReadLength);
         adjustMNP(vd, ref, c, region);
         realigndel(vd, ref, c, region, vd.maxReadLength);
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength);
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
         realignlgins(vd, ref, c, region, vd.maxReadLength);
+        // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Only the DEL
+        // discordant-pair path (findDELdisc) is ported.
+        if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);
         std::string buf;
         if (c.somatic) {

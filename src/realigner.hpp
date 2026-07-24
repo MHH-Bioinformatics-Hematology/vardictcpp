@@ -20,6 +20,12 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
 void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void adjSNV(VariationData& vd, Reference& ref);
+
+// Structural variants (discordant-pair deletions). filterSVStructures collapses svfdel/svrdel mate
+// clusters (VariationRealigner.filterSV) and must run before realignment; findDELdisc emits the <DEL>
+// breakpoint variations (StructuralVariantsProcessor.findDELdisc) and runs after realignment.
+void filterSVStructures(VariationData& vd, int maxReadLength);
+void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
 } // namespace vardict

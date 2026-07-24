@@ -38,9 +38,16 @@ struct Config {
     int indelsize = 50;       // -I  indel size / large-indel breakpoint search window
     int minMatch = 0;         // -M
     int SVMINLEN = 1000;      // -L  minimum SV length to spell as <DUP>/<INV>/<DEL>
+    int INSSIZE = 300;        // -w  expected insert size (SV discordant-pair threshold)
+    int INSSTD = 100;         // -W  insert-size standard deviation
+    int INSSTDAMT = 4;        // -A  number of insert-size SDs for the SV threshold
+    bool disableSV = false;   // --nosv
     static constexpr int EXTENSION = 5000;
     static constexpr int SVMAXLEN = 150000;
     static constexpr int SVFLANK = 50;
+    static constexpr int MINMAPBASE = 15;   // Configuration.MINMAPBASE
+    static constexpr double MINSVCDIST = 1.5; // Configuration.MINSVCDIST
+    static constexpr double DISCPAIRQUAL = 35; // Configuration.DISCPAIRQUAL
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F
     bool performLocalRealignment = true; // -k (CigarModifier + realignment)
