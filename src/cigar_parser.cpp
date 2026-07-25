@@ -172,6 +172,12 @@ bool CigarParser::process(const Region& region, VariationData& out) {
     long lastStart = -1;
     std::map<std::string, int> dupKeys;
 
+    // Per-read scratch buffers, reused across reads: reads are near-uniform length, so after the first
+    // record the string/vectors keep their capacity and no longer heap-allocate each iteration.
+    std::string bseq;
+    std::vector<int> bqual;
+    Cig cigv;
+
     while (sam_itr_next(fp, it, b) >= 0) {
         const bam1_core_t& c = b->core;
         if (c.flag & BAM_FUNMAP) continue;
@@ -272,12 +278,12 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         static const char CODE[] = "=ACMGRSVTWYHKDBN";
         const uint8_t* rawseq = bam_get_seq(b);
         const uint8_t* rawqual = bam_get_qual(b);
-        std::string bseq(c.l_qseq, 'N');
-        std::vector<int> bqual(c.l_qseq);
+        bseq.assign(c.l_qseq, 'N');
+        bqual.resize(c.l_qseq);
         for (int j = 0; j < c.l_qseq; ++j) { bseq[j] = CODE[bam_seqi(rawseq, j)]; bqual[j] = rawqual[j]; }
         const uint32_t* rawcig = bam_get_cigar(b);
         static const char OPS[] = "MIDNSHP=X";
-        Cig cigv;
+        cigv.clear();
         for (uint32_t k = 0; k < c.n_cigar; ++k) cigv.push_back({(int)bam_cigar_oplen(rawcig[k]), OPS[bam_cigar_op(rawcig[k])]});
         int rpos = c.pos + 1;   // 1-based reference position of current op
         if (cfg_.performLocalRealignment) modifyCigar(rpos, cigv, bseq, bqual, ref_, out.maxReadLength, cfg_);

@@ -941,11 +941,16 @@ struct Match35 { int b5; int b3; int score; };
 static Match35 find35match(const std::string& seq5, const std::string& seq3) {
     const int longMismatch = 2;
     int maxLen = 0, b3 = 0, b5 = 0;
-    for (int i = 0; i < (int)seq5.size() - 8; ++i) {
-        for (int j = 1; j < (int)seq3.size() - 8; ++j) {
+    const int s5 = (int)seq5.size(), s3 = (int)seq3.size();
+    for (int i = 0; i < s5 - 8; ++i) {
+        for (int j = 1; j < s3 - 8; ++j) {
             int nm = 0, n = 0;
-            while (n + j <= (int)seq3.size() && i + n <= (int)seq5.size()) {
-                if (substr(seq3, -j - n, 1) != substr(seq5, i + n, 1)) nm++;
+            while (n + j <= s3 && i + n <= s5) {
+                // substr(seq3,-j-n,1) is the char at s3-(j+n) (always in range here); substr(seq5,i+n,1)
+                // is seq5[i+n], or "" when i+n==s5 -> represented by a sentinel that always mismatches.
+                char c3 = seq3[s3 - (j + n)];
+                char c5 = (i + n < s5) ? seq5[i + n] : (char)0xFF;
+                if (c3 != c5) nm++;
                 if (nm > longMismatch) break;
                 n++;
             }
