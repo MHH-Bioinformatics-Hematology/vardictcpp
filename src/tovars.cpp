@@ -202,7 +202,13 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
     std::vector<Variant> result;
     const double freq = cfg.freq;
 
-    for (const auto& [position, alleleMap] : vd.nonInsertionVariants) {
+    // nonInsertionVariants is an unordered_map (fast per-base insertion); emit in ascending position.
+    std::vector<int> sortedPositions;
+    sortedPositions.reserve(vd.nonInsertionVariants.size());
+    for (const auto& kv : vd.nonInsertionVariants) sortedPositions.push_back(kv.first);
+    std::sort(sortedPositions.begin(), sortedPositions.end());
+    for (int position : sortedPositions) {
+        const VarMap& alleleMap = vd.nonInsertionVariants.at(position);
         // A position carrying a structural-variant marker is emitted even outside the region window
         // (ToVarsBuilder skips the region-bounds check when varsAtCurPosition.sv != null).
         auto svIt = vd.svInfoAt.find(position);
@@ -624,7 +630,12 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
     std::vector<SomaticPosition> out;
     const double freq = cfg.freq;
 
-    for (const auto& [position, alleleMap] : vd.nonInsertionVariants) {
+    std::vector<int> sortedPositions;
+    sortedPositions.reserve(vd.nonInsertionVariants.size());
+    for (const auto& kv : vd.nonInsertionVariants) sortedPositions.push_back(kv.first);
+    std::sort(sortedPositions.begin(), sortedPositions.end());
+    for (int position : sortedPositions) {
+        const VarMap& alleleMap = vd.nonInsertionVariants.at(position);
         auto svIt = vd.svInfoAt.find(position);
         bool isSVpos = svIt != vd.svInfoAt.end();
         if (!isSVpos && (position < region.start || position > region.end)) continue;

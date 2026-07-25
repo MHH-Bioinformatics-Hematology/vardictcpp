@@ -44,10 +44,11 @@ private:
 
 // Per-region variation data (mirrors data/scopedata/VariationData.java, counting subset).
 struct VariationData {
-    std::map<int, VarMap> nonInsertionVariants; // position -> allele -> Variation (ordered: drives emit)
     // These position-keyed maps are only ever accessed by key (never iterated in ascending order), or
     // are collected and std::sort'ed into a total order before use, so an unordered_map is byte-identical
-    // and removes red-black-tree descents from the per-base counting hotpath.
+    // and removes red-black-tree descents from the per-base counting hotpath. nonInsertionVariants
+    // drives the emit order, so ToVarsBuilder sorts its keys ascending at the two output sites.
+    std::unordered_map<int, VarMap> nonInsertionVariants; // position -> allele -> Variation
     std::unordered_map<int, VarMap> insertionVariants;    // position -> "+SEQ" -> Variation
     std::unordered_map<int, int>    refCoverage;          // position -> total coverage
     std::unordered_map<int, std::map<std::string,int>> mnp; // position -> MNV description -> count

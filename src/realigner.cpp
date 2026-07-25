@@ -111,10 +111,10 @@ static std::string joinRefFor3Lgins(Reference& ref, int from, int to, int shift5
     return sb;
 }
 
-static Variation& getVariation(std::map<int, VarMap>& hash, int pos, const std::string& key) {
+static Variation& getVariation(std::unordered_map<int, VarMap>& hash, int pos, const std::string& key) {
     return hash[pos][key];
 }
-static Variation* getVariationMaybe(std::map<int, VarMap>& hash, int pos, char refBase) {
+static Variation* getVariationMaybe(std::unordered_map<int, VarMap>& hash, int pos, char refBase) {
     auto it = hash.find(pos);
     if (it == hash.end()) return nullptr;
     auto vit = it->second.find(std::string(1, refBase));
