@@ -26,6 +26,9 @@ void adjSNV(VariationData& vd, Reference& ref);
 // breakpoint variations (StructuralVariantsProcessor.findDELdisc) and runs after realignment.
 void filterSVStructures(VariationData& vd, int maxReadLength);
 void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+// StructuralVariantsProcessor.findsv: split-read SVs from soft clips. Only the candidate-inversion
+// path is emitted here (<INV>); runs after realignment, before findDELdisc (findAllSVs order).
+void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
 } // namespace vardict

@@ -248,8 +248,9 @@ int main(int argc, char** argv) {
         realignlgdel(vd, ref, c, region, vd.maxReadLength);
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
         realignlgins(vd, ref, c, region, vd.maxReadLength);
-        // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Only the DEL
-        // discordant-pair path (findDELdisc) is ported.
+        // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Ported paths,
+        // in Java order: findsv (split-read <INV>), then findDELdisc (discordant-pair <DEL>).
+        if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);
         std::string buf;

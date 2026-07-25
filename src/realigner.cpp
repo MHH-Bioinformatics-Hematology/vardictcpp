@@ -247,6 +247,50 @@ static Match findMatch(std::string seq, Reference& ref, int /*position*/, int di
     return { 0, "" };
 }
 
+// StructuralVariantsProcessor.findMatchRev: like findMatch but searches the reverse-complemented
+// consensus (used by findsv's candidate-inversion path). dir==1 means the seq came from a 3' clip.
+static Match findMatchRev(std::string seq, Reference& ref, int /*position*/, int dir, int SEED, int MM) {
+    if (dir == 1) seq = reverseStr(seq);
+    seq = complementStr(seq);
+    auto hasNe = [&](char c, int pos) { return ref.has(pos) && ref.at(pos) != c; };
+    std::string extra;
+    for (int i = (int)seq.size() - SEED; i >= 0; --i) {
+        std::string kmer = substr(seq, i, SEED);
+        const std::vector<int>* seeds = ref.seedPositions(kmer);
+        if (!seeds || seeds->size() != 1) continue;
+        int firstSeed = (*seeds)[0];
+        int bp = dir == 1 ? firstSeed + (int)seq.size() - i - 1 : firstSeed - i;
+        if (ismatchref(seq, ref, bp, -dir, MM)) {
+            return { bp, extra };
+        } else {
+            // for complex indels, allow some mismatches at the end up to 15bp or 20% length
+            std::string sseq = seq;
+            int eqcnt = 0;
+            for (int j = 1; j <= 15; ++j) {
+                bp -= dir;
+                sseq = dir == -1 ? substr(sseq, 1) : substr(sseq, 0, (int)sseq.size() - 1);
+                if (dir == -1) {
+                    if (hasNe(charAt(sseq, 0), bp)) continue;
+                    eqcnt++;
+                    if (hasNe(charAt(sseq, 1), bp + 1)) continue;
+                    extra = substr(seq, 0, j);
+                } else {
+                    if (hasNe(charAt(sseq, -1), bp)) continue;
+                    eqcnt++;
+                    if (hasNe(charAt(sseq, -2), bp - 1)) continue;
+                    extra = substr(seq, -j);
+                }
+                if (eqcnt >= 3 && eqcnt / (double)j > 0.5) break;
+                if (ismatchref(sseq, ref, bp, -dir, 1)) return { bp, extra };
+            }
+        }
+    }
+    return { 0, "" };
+}
+static Match findMatchRev(std::string seq, Reference& ref, int position, int dir) {
+    return findMatchRev(std::move(seq), ref, position, dir, Reference::SEED_1, 3);
+}
+
 // ---- soft-clip consensus (findconseq) -----------------------------------------------------------
 
 static std::string findconseq(Sclip& sc) {
@@ -1354,6 +1398,109 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
         del.used = true;
         ref.ensure(del.mstart - 100, del.mend + 100);
         markSVDel(del.mend, del.start, vd.svfdel, maxReadLength);
+    }
+}
+
+// StructuralVariantsProcessor.findsv: split-read SVs on 3'/5' soft clips. The forward findMatch branch
+// (candidate DEL/DUP) needs discordant-pair support via checkPairs, which is unported (no discordant SV
+// pairs are collected on WES targets, so checkPairs would return 0 and Java just `continue`s); the DUP
+// sub-branch is empty in Java. Only the candidate-inversion path (findMatch fails, findMatchRev matches
+// the reverse strand) emits variations here, producing the split-read <INV> calls (SVinfo cnt-0-0).
+void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+    (void)maxReadLength;
+    auto& NIV = vd.nonInsertionVariants;
+
+    // fillAndSortTmpSV: unused soft clips within the current segment, sorted by count descending.
+    struct SortSclip { int position; Sclip* sc; int count; };
+    auto fillAndSort = [&](std::map<int, Sclip>& clips) {
+        std::vector<SortSclip> tmp;
+        for (auto& [pos, sc] : clips) {
+            if (sc.used) continue;
+            if (pos < region.start || pos > region.end) continue;
+            tmp.push_back({pos, &sc, sc.varsCount});
+        }
+        std::stable_sort(tmp.begin(), tmp.end(),
+                         [](const SortSclip& a, const SortSclip& b) { return a.count > b.count; });
+        return tmp;
+    };
+    auto& refseq = ref;   // reference.referenceSequences accessor
+    auto isHasAndEq = [&](char c, int pos) { return refseq.has(pos) && refseq.at(pos) == c; };
+
+    // 5' soft clips
+    for (auto& t5 : fillAndSort(vd.softClips5End)) {
+        int p5 = t5.position;
+        Sclip& sc5v = *t5.sc;
+        int cnt5 = t5.count;
+        if (cnt5 < cfg.minReads) break;
+        if (sc5v.used) continue;
+        std::string seq = findconseq(sc5v);
+        if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
+        Match match = findMatch(seq, ref, p5, -1, Reference::SEED_1, 3);
+        int bp = match.bp;
+        std::string EXTRA = match.extra;
+        if (bp != 0) continue;   // candidate DEL/DUP (checkPairs unported -> no output; DUP is empty)
+        // candidate inversion
+        Match matchRev = findMatchRev(seq, ref, p5, -1);
+        bp = matchRev.bp; EXTRA = matchRev.extra;
+        if (bp == 0) continue;
+        if (!(std::abs(bp - p5) > Config::SVFLANK)) continue;
+        if (bp <= p5) { int temp = bp; bp = p5; p5 = temp; }
+        bp--;
+        while (refseq.has(bp + 1) && isHasAndEq(complementBase(refseq.at(bp + 1)), p5 - 1)) {
+            p5--; if (p5 != 0) bp++;
+        }
+        std::string ins5 = reverseComplement(joinRef(ref, bp - Config::SVFLANK + 1, bp));
+        std::string ins3 = reverseComplement(joinRef(ref, p5, p5 + Config::SVFLANK - 1));
+        int mid = bp - p5 - (int)ins5.size() - (int)ins3.size() + 1;
+        std::string vn = "-" + std::to_string(bp - p5 + 1) + "^" + ins5 + "<inv" + std::to_string(mid) + ">" + ins3 + EXTRA;
+        if (mid <= 0) {
+            std::string tins = reverseComplement(joinRef(ref, p5, bp));
+            vn = "-" + std::to_string(bp - p5 + 1) + "^" + tins + EXTRA;
+        }
+        Variation& vref = getVariation(NIV, p5, vn);
+        SVInfo& sv = vd.svInfoAt[p5];
+        sv.type = "INV"; sv.splits += cnt5;
+        adjCnt(vref, sc5v);
+        vd.refCoverage[p5] += cnt5;
+        if (vd.refCoverage.count(bp) && vd.refCoverage[p5] < vd.refCoverage[bp]) vd.refCoverage[p5] = vd.refCoverage[bp];
+    }
+
+    // 3' soft clips
+    for (auto& t3 : fillAndSort(vd.softClips3End)) {
+        int p3 = t3.position;
+        Sclip& sc3v = *t3.sc;
+        int cnt3 = t3.count;
+        if (cnt3 < cfg.minReads) break;
+        if (sc3v.used) continue;
+        std::string seq = findconseq(sc3v);
+        if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
+        Match match = findMatch(seq, ref, p3, 1, Reference::SEED_1, 3);
+        int bp = match.bp;
+        std::string EXTRA = match.extra;
+        if (bp != 0) continue;   // candidate DEL/DUP (checkPairs unported -> no output; DUP is empty)
+        // candidate inversion
+        Match matchRev = findMatchRev(seq, ref, p3, 1);
+        bp = matchRev.bp; EXTRA = matchRev.extra;
+        if (bp == 0) continue;
+        if (std::abs(bp - p3) <= Config::SVFLANK) continue;
+        if (bp < p3) { int tmp = bp; bp = p3; p3 = tmp; p3++; bp--; }
+        while (refseq.has(bp + 1) && isHasAndEq(complementBase(refseq.at(bp + 1)), p3 - 1)) {
+            p3--; if (p3 != 0) bp++;
+        }
+        std::string ins5 = reverseComplement(joinRef(ref, bp - Config::SVFLANK + 1, bp));
+        std::string ins3 = reverseComplement(joinRef(ref, p3, p3 + Config::SVFLANK - 1));
+        int mid = bp - p3 - 2 * Config::SVFLANK + 1;
+        std::string vn = "-" + std::to_string(bp - p3 + 1) + "^" + EXTRA + ins5 + "<inv" + std::to_string(mid) + ">" + ins3;
+        if (mid <= 0) {
+            std::string tins = reverseComplement(joinRef(ref, p3, bp));
+            vn = "-" + std::to_string(bp - p3 + 1) + "^" + EXTRA + tins;
+        }
+        Variation& vref = getVariation(NIV, p3, vn);
+        SVInfo& sv = vd.svInfoAt[p3];
+        sv.type = "INV"; sv.splits += cnt3;
+        adjCnt(vref, sc3v);
+        vd.refCoverage[p3] += cnt3;
+        if (vd.refCoverage.count(bp) && vd.refCoverage[p3] < vd.refCoverage[bp]) vd.refCoverage[p3] = vd.refCoverage[bp];
     }
 }
 

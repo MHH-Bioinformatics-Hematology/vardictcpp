@@ -348,6 +348,30 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             } else if (allele[0] == '+') {              // insertion (rare in nonInsertion map)
                 var.refallele = std::string(1, refBase);
                 var.varallele = std::string(1, refBase) + allele.substr(1);
+            } else if (allele[0] == '-' && allele.find("<inv") != std::string::npos) {
+                // Split-read inversion (findsv): "-N^ins5<invMID>ins3[EXTRA]". ToVarsBuilder renders it
+                // as <INV> with genotype2 "<INV{N}>". The INV_NUM / SOME_SV_NUMBERS matches drive the
+                // rendering: refallele = single base at position (no 5' anchor since '^' is present),
+                // startPosition = position, endPosition = position + N - 1. MSI as proceedVrefIsDeletion.
+                int dl = std::stoi(allele.substr(1));
+                var.varallele = "<INV>";
+                var.refallele = std::string(1, refBase);
+                var.startPosition = position;
+                var.endPosition = position + dl - 1;
+                if (dl < cfg.SVMINLEN) {
+                    // proceedVrefIsDeletion MSI (same as the plain sub-SV deletion path below).
+                    std::string leftseq, tseq;
+                    for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
+                    for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
+                    std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
+                    std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
+                    MSIResult m = findMSI(t1, t2, leftseq);
+                    MSIResult m2 = findMSI(leftseq, t2);
+                    double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
+                    if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
+                    if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
+                    var.msi = msi; var.shift3 = shift3; var.msint = msint;
+                }
             } else if (allele[0] == '-') {             // deletion "-N" (possibly with complex tail &/#/^)
                 int dl = std::stoi(allele.substr(1));
                 bool complexDel = allele.find('&') != std::string::npos ||
@@ -432,6 +456,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 // MNV/SNV keep the raw string (incl. '&', cleaned at the very end).
                 auto rawDesc = [&](const std::string& a) -> std::string {
                     if (!a.empty() && a[0] == '+') return "+" + std::to_string((int)a.size() - 1);
+                    if (a.size() > 1 && a[0] == '-' && a.find("<inv") != std::string::npos)
+                        return "<INV" + a.substr(1, a.find('^') - 1) + ">"; // split-read INV -> "<INV{N}>"
                     return a; // deletion "-N" or MNV/SNV description (with '&' if present)
                 };
                 // genotype1current starts from the position's dominant description string.
