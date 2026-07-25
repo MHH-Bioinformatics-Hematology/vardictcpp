@@ -538,6 +538,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 } else {
                     var.vartype = "Insertion";
                 }
+                // SV_info: an insertion anchored at an SV-marked position (e.g. realignlgins DUP)
+                // shares the position-level "<splits>-<pairs>-<clusters>" string (ToVarsBuilder).
+                if (isSVpos) var.svInfo = std::to_string(svIt->second.splits) + "-" +
+                                          std::to_string(svIt->second.pairs) + "-" +
+                                          std::to_string(svIt->second.clusters);
                 var.refallele = refAll;
                 var.varallele = varAll;
                 var.startPosition = startPos;
@@ -594,7 +599,9 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
     const double freq = cfg.freq;
 
     for (const auto& [position, alleleMap] : vd.nonInsertionVariants) {
-        if (position < region.start || position > region.end) continue;
+        auto svIt = vd.svInfoAt.find(position);
+        bool isSVpos = svIt != vd.svInfoAt.end();
+        if (!isSVpos && (position < region.start || position > region.end)) continue;
         auto covIt = vd.refCoverage.find(position);
         if (covIt == vd.refCoverage.end() || covIt->second == 0) continue;
         int totalCov = covIt->second;
@@ -820,6 +827,11 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 } else {
                     var.vartype = "Insertion";
                 }
+                // SV_info: an insertion anchored at an SV-marked position (e.g. realignlgins DUP)
+                // shares the position-level "<splits>-<pairs>-<clusters>" string (ToVarsBuilder).
+                if (isSVpos) var.svInfo = std::to_string(svIt->second.splits) + "-" +
+                                          std::to_string(svIt->second.pairs) + "-" +
+                                          std::to_string(svIt->second.clusters);
                 var.refallele = refAll;
                 var.varallele = varAll;
                 var.startPosition = startPos;

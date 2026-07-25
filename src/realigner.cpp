@@ -1031,6 +1031,7 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
         if (seq.empty() || (int)seq.size() < 12) continue;
         BaseInsertion tpl = findbi(seq, p, ref, -1, vd.chrLen);
         int bi = tpl.bi; std::string ins = tpl.ins;
+        bool madeSV = false;
         if (bi == 0) {   // findbi failed: seed findMatch DUP path (markDUPSV / partialPipeline gated)
             if (islowcomplexseq(seq)) continue;
             Match match = findMatch(seq, ref, p, -1, Reference::SEED_1, 1);
@@ -1048,11 +1049,19 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
                 vd.refCoverage[p - 1] = vd.refCoverage.count(bi) ? vd.refCoverage[bi] : sc5v.varsCount;
             } else if (sc5v.varsCount > vd.refCoverage[p - 1]) vd.refCoverage[p - 1] += sc5v.varsCount;
             bi = p - 1;
+            // VariationRealigner.getSV(nonInsertionVariants, bi): anchor a DUP SV marker at bi so
+            // ToVarsBuilder (which iterates nonInsertionVariants) visits this position and emits the
+            // insertion. markDUPSV is gated -> pairs/clusters=0; splits accumulates the split count.
+            NIV[bi];  // create the non-insertion anchor (empty allele map)
+            SVInfo& sv = vd.svInfoAt[bi];
+            sv.type = "DUP"; sv.splits += sc5v.varsCount;
+            madeSV = true;
         }
         Variation& iref = vd.insertionVariants[bi]["+" + ins];
         iref.pstd = true; iref.qstd = true;
         adjCnt(iref, sc5v);
-        if (NIV.count(bi)) vd.refCoverage[bi] += sc5v.varsCount;
+        // Java increments refCoverage only when the anchor carries no SV marker (sv == null).
+        if (NIV.count(bi) && !madeSV && !vd.svInfoAt.count(bi)) vd.refCoverage[bi] += sc5v.varsCount;
         int len = (int)ins.size(); if (ins.find('&') != std::string::npos) len--;
         if (!sc5v.seq.empty()) {
             int seqLen = sc5v.seq.rbegin()->first + 1;
@@ -1093,6 +1102,10 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             }
             ins += EXTRA;
             bi = bi - 1;
+            // getSV anchor (see 5' branch): make ToVarsBuilder visit bi and emit the insertion.
+            NIV[bi];
+            SVInfo& sv = vd.svInfoAt[bi];
+            sv.type = "DUP"; sv.splits += sc3v.varsCount;
             if (!vd.refCoverage.count(bi) || (vd.refCoverage.count(p) && vd.refCoverage[bi] < vd.refCoverage[p])) {
                 vd.refCoverage[bi] = vd.refCoverage.count(p) ? vd.refCoverage[p] : sc3v.varsCount;
             } else if (sc3v.varsCount > vd.refCoverage[bi]) vd.refCoverage[bi] += sc3v.varsCount;
