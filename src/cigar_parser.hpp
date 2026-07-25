@@ -1,5 +1,6 @@
 #pragma once
 #include <map>
+#include <unordered_map>
 #include <string>
 #include <stdexcept>
 #include <htslib/sam.h>
@@ -43,12 +44,15 @@ private:
 
 // Per-region variation data (mirrors data/scopedata/VariationData.java, counting subset).
 struct VariationData {
-    std::map<int, VarMap> nonInsertionVariants; // position -> allele -> Variation
-    std::map<int, VarMap> insertionVariants;    // position -> "+SEQ" -> Variation
-    std::map<int, int>    refCoverage;          // position -> total coverage
-    std::map<int, std::map<std::string,int>> mnp; // position -> MNV description -> count
-    std::map<int, std::map<std::string,int>> positionToInsertionCount; // pos -> "+SEQ" -> count
-    std::map<int, std::map<std::string,int>> positionToDeletionCount;  // pos -> "-N" -> count
+    std::map<int, VarMap> nonInsertionVariants; // position -> allele -> Variation (ordered: drives emit)
+    // These position-keyed maps are only ever accessed by key (never iterated in ascending order), or
+    // are collected and std::sort'ed into a total order before use, so an unordered_map is byte-identical
+    // and removes red-black-tree descents from the per-base counting hotpath.
+    std::unordered_map<int, VarMap> insertionVariants;    // position -> "+SEQ" -> Variation
+    std::unordered_map<int, int>    refCoverage;          // position -> total coverage
+    std::unordered_map<int, std::map<std::string,int>> mnp; // position -> MNV description -> count
+    std::unordered_map<int, std::map<std::string,int>> positionToInsertionCount; // pos -> "+SEQ" -> count
+    std::unordered_map<int, std::map<std::string,int>> positionToDeletionCount;  // pos -> "-N" -> count
     std::map<int, Sclip> softClips5End;         // 5' soft-clip consensus per position
     std::map<int, Sclip> softClips3End;         // 3' soft-clip consensus per position
     // Structural-variant clusters (data/SVStructures.java): discordant read-pair deletion clusters,

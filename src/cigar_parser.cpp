@@ -455,7 +455,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                         bool isIns = (!s.empty() && s[0] == '+');
                         if (isIns) out.positionToInsertionCount[pos][s]++;
                         else if (isMnpDesc(s)) out.mnp[pos][s]++;
-                        Variation& v = (isIns ? out.insertionVariants : out.nonInsertionVariants)[pos][s];
+                        Variation& v = isIns ? out.insertionVariants[pos][s] : out.nonInsertionVariants[pos][s];
                         if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
                         if (!v.qstd && v.pq != 0 && qavg != v.pq) v.qstd = true;
                         v.varsCount++;
