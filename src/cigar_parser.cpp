@@ -486,12 +486,51 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 std::string ins;
                 double qsum = 0;
                 for (int i = 0; i < len; ++i) { ins += bseq[qpos + i]; qsum += bqual[qpos + i]; }
-                adjInsPos(p, ins, ref_);   // left-normalize insertion anchor in repeats
-                std::string sig = "+" + ins;
-                if (p >= rlo && p <= rhi && ins.find('N') == std::string::npos) {
+
+                // processInsertion's isNextMatched extension (I+M): when the insertion is followed by a
+                // matched segment whose leading base(s) mismatch the reference within vext, fold those
+                // bases into the insertion descriptor ("+ins&mismatch") and skip them in the next M
+                // segment - one complex variant instead of a separate insertion + SNV. The rarer
+                // isInsertionOrDeletionWithNextMatched (I+M+I/D appendSegments) path is left as a plain
+                // insertion (no regression).
+                int offset = 0, nmoff = 0;
+                std::string ssx;
+                bool insDelNext = cfg_.performLocalRealignment && (k + 2) < cigv.size()
+                    && cigv[k + 1].first <= cfg_.vext && cigv[k + 1].second == 'M'
+                    && (cigv[k + 2].second == 'I' || cigv[k + 2].second == 'D')
+                    && ((k + 3) >= cigv.size() || (cigv[k + 3].second != 'I' && cigv[k + 3].second != 'D'));
+                if (!insDelNext && cfg_.performLocalRealignment && (k + 1) < cigv.size() && cigv[k + 1].second == 'M') {
+                    int mlen = cigv[k + 1].first;
+                    int mbeg = qpos + len;   // readPositionIncludingSoftClipped + cigarElementLength
+                    int vsn = 0;
+                    for (int vi = 0; vsn <= cfg_.vext && vi < mlen; vi++) {
+                        if (mbeg + vi >= (int)bseq.size()) break;
+                        if (bseq[mbeg + vi] == 'N') break;
+                        if (bqual[mbeg + vi] < cfg_.goodq) break;
+                        if (ref_.has(rpos + vi)) {
+                            if (bseq[mbeg + vi] != ref_.at(rpos + vi)) { offset = vi + 1; nmoff++; vsn = 0; }
+                            else vsn++;
+                        }
+                    }
+                    if (offset != 0) {
+                        ssx = bseq.substr(mbeg, offset);
+                        for (int osi = 0; osi < offset; osi++) {
+                            qsum += bqual[mbeg + osi];
+                            int cp = rpos + osi;
+                            if (cp >= rlo && cp <= rhi) out.refCoverage[cp]++;
+                        }
+                    }
+                }
+
+                std::string desc = ins;
+                if (offset > 0) desc += "&" + ssx;   // complex: BEGIN_ATGC_END fails, so no adjInsPos
+                else adjInsPos(p, desc, ref_);        // left-normalize insertion anchor in repeats
+                std::string sig = "+" + desc;
+                int totLen = len + offset;
+                if (p >= rlo && p <= rhi && desc.find('N') == std::string::npos) {
                     int tp = foldPos(rpe);
-                    // mean quality of the inserted segment (CigarParser.processInsertion: tmpq)
-                    double tmpq = qsum / (len ? len : 1);
+                    // mean quality over the inserted segment plus any folded matched bases (Java tmpq)
+                    double tmpq = qsum / (totLen ? totLen : 1);
                     out.positionToInsertionCount[p][sig]++;
                     Variation& v = out.insertionVariants[p][sig];
                     // pstd/qstd flags (set before pp/pq are refreshed), per Java processInsertion
@@ -505,9 +544,10 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     v.pp = tp; v.pq = tmpq;
                     // high/low-quality read split by goodq threshold (Java: tmpq >= goodq)
                     if (tmpq >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
-                    v.numberOfMismatches += nm;
+                    v.numberOfMismatches += nm - nmoff;
                 }
-                qpos += len; rpe += len;
+                qpos += len + offset; rpe += len + offset; rpos += offset;
+                carryOffset = offset;   // next M segment starts past the folded bases
                 break;
             }
             case 'D': {
