@@ -560,10 +560,32 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
     auto& NIV = vd.nonInsertionVariants;
     for (const auto& t : tmp) {
         int p = t.position; const std::string& vn = t.desc; int dcnt = t.count;
-        // BEGIN_MINUS_NUMBER: dellen. (^N / SV / & grammar not produced by this port.)
+        // BEGIN_MINUS_NUMBER: dellen. Complex deletions "-N&ss"/"-N^ins"/"-N#seg^M" carry a tail that
+        // shifts the 5'/3' flanking sequences used for soft-clip re-matching, so a complex deletion
+        // does NOT scoop the soft-clip that belongs to the plain "-N" (VariationRealigner realigndel).
+        //   BEGIN_MINUS_NUMBER_ANY  extra    = tail after "-<dellen>", with ^,&,# stripped
+        //   CARET_ATGNC             extrains = ATGNC run following the first '^'
+        //   UP_NUMBER_END           dellen  += trailing "^<digits>"
         if (vn.empty() || vn[0] != '-') continue;
         int dellen = std::atoi(vn.c_str() + 1);
         std::string extra, extrains;
+        {
+            size_t di = 1; while (di < vn.size() && isdigit((unsigned char)vn[di])) di++;
+            std::string rest = vn.substr(di);
+            for (char ch : rest) if (ch != '^' && ch != '&' && ch != '#') extra += ch;
+            auto cp = rest.find('^');
+            if (cp != std::string::npos)
+                for (size_t z = cp + 1; z < rest.size(); ++z) {
+                    char c = rest[z];
+                    if (c=='A'||c=='T'||c=='G'||c=='N'||c=='C') extrains += c; else break;
+                }
+            auto up = rest.rfind('^');
+            if (up != std::string::npos && up + 1 < rest.size()) {
+                bool allDig = true;
+                for (size_t z = up + 1; z < rest.size(); ++z) if (!isdigit((unsigned char)rest[z])) { allDig = false; break; }
+                if (allDig) dellen += std::atoi(rest.c_str() + up + 1);
+            }
+        }
         Variation& vref = getVariation(NIV, p, vn);
         int wustart = p - 200 > 1 ? p - 200 : 1;
         std::string wupseq = joinRef(ref, wustart, p - 1) + extra;
