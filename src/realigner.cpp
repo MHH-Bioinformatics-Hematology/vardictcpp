@@ -219,6 +219,29 @@ static Match findMatch(std::string seq, Reference& ref, int /*position*/, int di
             }
             if (!extra.empty() && dir == -1) extra = reverseStr(extra);
             return { bp, extra };
+        } else {
+            // Complex-indel fallback: walk up to 15bp from the seed, allowing mismatched end bases
+            // (collected into EXTRA), until the remaining consensus matches the reference (MM=1).
+            auto hasNe = [&](char c, int pos) { return ref.has(pos) && ref.at(pos) != c; };
+            std::string sseq = seq;
+            int eqcnt = 0;
+            for (int ii = 1; ii <= 15; ++ii) {
+                bp += dir;
+                sseq = dir == 1 ? substr(sseq, 1) : substr(sseq, 0, (int)sseq.size() - 1);
+                if (dir == 1) {
+                    if (hasNe(charAt(sseq, 0), bp)) continue;
+                    eqcnt++;
+                    if (hasNe(charAt(sseq, 1), bp + 1)) continue;
+                    extra = substr(seq, 0, ii);
+                } else {
+                    if (hasNe(charAt(sseq, -1), bp)) continue;
+                    eqcnt++;
+                    if (hasNe(charAt(sseq, -2), bp - 1)) continue;
+                    extra = substr(seq, -ii);
+                }
+                if (eqcnt >= 3 && eqcnt / (double)ii > 0.5) break;
+                if (ismatchref(sseq, ref, bp, dir, 1)) return { bp, extra };
+            }
         }
     }
     return { 0, "" };
