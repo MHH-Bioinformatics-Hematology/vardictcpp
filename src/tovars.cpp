@@ -231,11 +231,49 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             }
         }
 
+        // Per-position frequency gate (ToVarsBuilder collectVarsAtPosition + the `maxfreq <= -f`
+        // drop): the WHOLE position is kept iff the maximum rounded AF over all non-reference
+        // variants (non-insertions AND insertions) exceeds -f. A sub-threshold variant (e.g. a SNV at
+        // exactly 0.0100) therefore survives when a sibling variant at the same position clears -f -
+        // this is NOT a per-variant filter. maxfreq mirrors createVariant/createInsertion's ttcov.
+        {
+            double maxfreq = 0.0;
+            for (const auto& [al, vv] : alleleMap) {
+                if (vv.varsCount == 0) continue;
+                if (al.size() == 1 && al[0] == refBase) continue;   // reference variant excluded
+                int ttcov = totalCov;
+                if (vv.varsCount > totalCov && vv.extracnt != 0 && vv.varsCount - totalCov < vv.extracnt) ttcov = vv.varsCount;
+                double f = ttcov > 0 ? round4((double)vv.varsCount / ttcov) : 0.0;
+                if (f > maxfreq) maxfreq = f;
+            }
+            auto insM = vd.insertionVariants.find(position);
+            if (insM != vd.insertionVariants.end()) {
+                int runningCov = totalCov;                            // createInsertion mutates totalPosCoverage across insertions
+                for (const auto& [al, vv] : insM->second) {           // std::map iterates in sorted key order
+                    if (vv.varsCount == 0) continue;
+                    if (al.find('&') != std::string::npos) {          // '&' insertion re-bases coverage on position+1
+                        auto c1 = vd.refCoverage.find(position + 1);
+                        if (c1 != vd.refCoverage.end()) runningCov = c1->second;
+                    }
+                    int ttcov = runningCov;
+                    if (vv.varsCount > runningCov && vv.extracnt != 0 && vv.varsCount - runningCov < vv.extracnt) ttcov = vv.varsCount;
+                    if (ttcov < vv.varsCount) {
+                        ttcov = vv.varsCount;
+                        auto c1 = vd.refCoverage.find(position + 1);
+                        if (c1 != vd.refCoverage.end() && ttcov < c1->second - vv.varsCount) ttcov = c1->second;
+                        runningCov = ttcov;
+                    }
+                    double f = ttcov > 0 ? round4((double)vv.varsCount / ttcov) : 0.0;
+                    if (f > maxfreq) maxfreq = f;
+                }
+            }
+            if (!cfg.doPileup && freq > 0 && maxfreq <= freq) continue;   // drop the whole position
+        }
+
         for (const auto& [allele, v] : alleleMap) {
             if (allele.size() == 1 && allele[0] == refBase) continue; // skip pure reference
             if (v.varsCount < cfg.minReads) continue;
             double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
-            if (!cfg.doPileup && freq > 0 && round4(af) <= freq) continue; // -f filter on rounded freq (Java maxfreq); freq=0 keeps af>0
 
             Variant var;
             var.startPosition = position;
@@ -421,7 +459,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
             for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
 
-            if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
+            // isGoodVar sees the Java-rounded frequency (Variant.isGoodVar tests the *formatted* AF):
+            // a variant at exactly -f (raw 0.009966 -> 0.0100) passes the `frequency < -f` gate, matching
+            // VarDictJava, while the stored var.frequency stays raw for identical output formatting.
+            { Variant probe = var; probe.frequency = round4(var.frequency);
+              if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, refMeanMapq)) continue; }
             result.push_back(std::move(var));
         }
 
@@ -431,7 +473,9 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             for (const auto& [allele, v] : insIt->second) {
                 if (v.varsCount < cfg.minReads) continue;
                 double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
-                if (!cfg.doPileup && freq > 0 && round4(af) <= freq) continue;
+                // Per-variant -f filter removed: the position-level maxfreq gate above already
+                // decided whether this position survives (ToVarsBuilder emits every insertion at a
+                // surviving position, subject to isGoodVar).
                 Variant var;
                 var.startPosition = position; var.endPosition = position;
                 var.totalPosCoverage = totalCov; var.varsCount = v.varsCount;
