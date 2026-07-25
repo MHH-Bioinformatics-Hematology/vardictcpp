@@ -489,19 +489,41 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 double qsum = 0;
                 for (int i = 0; i < len; ++i) { ins += bseq[qpos + i]; qsum += bqual[qpos + i]; }
 
-                // processInsertion's isNextMatched extension (I+M): when the insertion is followed by a
-                // matched segment whose leading base(s) mismatch the reference within vext, fold those
-                // bases into the insertion descriptor ("+ins&mismatch") and skip them in the next M
-                // segment - one complex variant instead of a separate insertion + SNV. The rarer
-                // isInsertionOrDeletionWithNextMatched (I+M+I/D appendSegments) path is left as a plain
-                // insertion (no regression).
-                int offset = 0, nmoff = 0;
+                // processInsertion's two complex-tail paths:
+                //  - isInsertionOrDeletionWithNextMatched (I + short M(<=vext) + I/D + non-indel): fold
+                //    the trailing M and following indel into the insertion via appendSegments,
+                //    producing "+ins#matchedM^indel" (+ a findOffset "&ss" tail), then advance ref/read
+                //    by the extra segments (multoffs/multoffp).
+                //  - isNextMatched (I + M): fold leading mismatch(es) of the next M into "+ins&mismatch".
+                // qcount tracks Java's qualityString length so the mean base quality (tmpq) matches.
+                int offset = 0, nmoff = 0, multoffs = 0, multoffp = 0, qcount = len;
                 std::string ssx;
+                std::string desc = ins;               // descStringOfInsertionSegment
                 bool insDelNext = cfg_.performLocalRealignment && (k + 2) < cigv.size()
                     && cigv[k + 1].first <= cfg_.vext && cigv[k + 1].second == 'M'
                     && (cigv[k + 2].second == 'I' || cigv[k + 2].second == 'D')
                     && ((k + 3) >= cigv.size() || (cigv[k + 3].second != 'I' && cigv[k + 3].second != 'D'));
-                if (!insDelNext && cfg_.performLocalRealignment && (k + 1) < cigv.size() && cigv[k + 1].second == 'M') {
+                if (insDelNext) {
+                    int mLen = cigv[k + 1].first, indelLen = cigv[k + 2].first, begin = qpos + len;
+                    // appendSegments (isInsertion=true): "#" + matched M, then "^" + (I seq | D len).
+                    desc += "#" + bseq.substr(begin, mLen);
+                    for (int i = 0; i < mLen; i++) { qsum += bqual[begin + i]; qcount++; }
+                    if (cigv[k + 2].second == 'I') {
+                        desc += "^" + bseq.substr(begin + mLen, indelLen);
+                        for (int i = 0; i < indelLen; i++) { qsum += bqual[begin + mLen + i]; qcount++; }
+                    } else {
+                        desc += "^" + std::to_string(indelLen);
+                        qsum += bqual[begin + mLen]; qcount++;   // isInsertion=true: one quality char for D
+                    }
+                    multoffs += mLen + (cigv[k + 2].second == 'D' ? indelLen : 0);
+                    multoffp += mLen + (cigv[k + 2].second == 'I' ? indelLen : 0);
+                    if (k + 3 < cigv.size() && cigv[k + 3].second == 'M') {
+                        OffsetRes tpl = findOffset(rpos + multoffs, qpos + len + multoffp, cigv[k + 3].first);
+                        offset = tpl.offset; ssx = tpl.ss;
+                        for (int qv : tpl.quals) { qsum += qv; qcount++; }   // nmoff NOT bumped here (Java)
+                    }
+                    k += 2;                             // consume the M and indel segments
+                } else if (cfg_.performLocalRealignment && (k + 1) < cigv.size() && cigv[k + 1].second == 'M') {
                     int mlen = cigv[k + 1].first;
                     int mbeg = qpos + len;   // readPositionIncludingSoftClipped + cigarElementLength
                     int vsn = 0;
@@ -517,22 +539,23 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     if (offset != 0) {
                         ssx = bseq.substr(mbeg, offset);
                         for (int osi = 0; osi < offset; osi++) {
-                            qsum += bqual[mbeg + osi];
+                            qsum += bqual[mbeg + osi]; qcount++;
                             int cp = rpos + osi;
                             if (cp >= rlo && cp <= rhi) out.refCoverage[cp]++;
                         }
                     }
                 }
 
-                std::string desc = ins;
-                if (offset > 0) desc += "&" + ssx;   // complex: BEGIN_ATGC_END fails, so no adjInsPos
-                else adjInsPos(p, desc, ref_);        // left-normalize insertion anchor in repeats
+                if (offset > 0) desc += "&" + ssx;
+                // adjInsPos only for pure-ATGC insertion descriptors (BEGIN_ATGC_END); complex
+                // "#/^/&" descriptors keep the anchor at rpos-1.
+                if (desc.find_first_not_of("ACGT") == std::string::npos && !desc.empty())
+                    adjInsPos(p, desc, ref_);          // left-normalize insertion anchor in repeats
                 std::string sig = "+" + desc;
-                int totLen = len + offset;
                 if (p >= rlo && p <= rhi && desc.find('N') == std::string::npos) {
                     int tp = foldPos(rpe);
-                    // mean quality over the inserted segment plus any folded matched bases (Java tmpq)
-                    double tmpq = qsum / (totLen ? totLen : 1);
+                    // mean quality over the inserted segment plus any folded/appended bases (Java tmpq)
+                    double tmpq = qsum / (qcount ? qcount : 1);
                     out.positionToInsertionCount[p][sig]++;
                     Variation& v = out.insertionVariants[p][sig];
                     // pstd/qstd flags (set before pp/pq are refreshed), per Java processInsertion
@@ -548,7 +571,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     if (tmpq >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
                     v.numberOfMismatches += nm - nmoff;
                 }
-                qpos += len + offset; rpe += len + offset; rpos += offset;
+                qpos += len + offset + multoffp; rpe += len + offset + multoffp; rpos += offset + multoffs;
                 carryOffset = offset;   // next M segment starts past the folded bases
                 break;
             }

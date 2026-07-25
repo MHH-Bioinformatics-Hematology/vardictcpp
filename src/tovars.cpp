@@ -83,6 +83,36 @@ static void applyComplexGrammar(const std::string& descriptionString, Reference&
     }
 }
 
+// Variant.adjComplex (SimplePostProcessModule): trim the shared 5' prefix and 3' suffix of a Complex
+// variant's ref/alt (keeping >= 1 base each side), shifting start/end and the flanking sequences.
+// Applied to Complex variants only, exactly as VarDictJava's post-processing does.
+static void adjComplexVar(Variant& v) {
+    std::string refAllele = v.refallele;
+    std::string varAllele = v.varallele;
+    if (!varAllele.empty() && varAllele[0] == '<') return;
+    int n = 0;
+    while ((int)refAllele.size() - n > 1 && (int)varAllele.size() - n > 1 &&
+           refAllele[n] == varAllele[n]) n++;
+    if (n > 0) {
+        v.startPosition += n;
+        v.refallele = substr(refAllele, n);
+        v.varallele = substr(varAllele, n);
+        v.leftseq += substr(refAllele, 0, n);
+        v.leftseq = substr(v.leftseq, n);
+    }
+    refAllele = v.refallele;
+    varAllele = v.varallele;
+    n = 1;
+    while ((int)refAllele.size() - n > 0 && (int)varAllele.size() - n > 0 &&
+           substr(refAllele, -n, 1) == substr(varAllele, -n, 1)) n++;
+    if (n > 1) {
+        v.endPosition -= n - 1;
+        v.refallele = substr(refAllele, 0, 1 - n);
+        v.varallele = substr(varAllele, 0, 1 - n);
+        v.rightseq = substr(refAllele, 1 - n, n - 1) + substr(v.rightseq, 0, 1 - n);
+    }
+}
+
 // Port of variations/Variant.java isGoodVar for the simple single-sample path. Reference-allele
 // stats (hicnt, mean mapping quality) are passed in from the position's ref accumulator. MSI columns
 // default to 0 until findMSI is ported, so the two MSI gates are inactive (matches a no-MSI position).
@@ -464,6 +494,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             // VarDictJava, while the stored var.frequency stays raw for identical output formatting.
             { Variant probe = var; probe.frequency = round4(var.frequency);
               if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, refMeanMapq)) continue; }
+            if (var.vartype == "Complex") adjComplexVar(var);   // SimplePostProcessModule.adjComplex
             result.push_back(std::move(var));
         }
 
@@ -538,7 +569,9 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
-                if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
+                { Variant probe = var; probe.frequency = round4(var.frequency);
+                  if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, refMeanMapq)) continue; }
+                if (var.vartype == "Complex") adjComplexVar(var);   // SimplePostProcessModule.adjComplex
                 result.push_back(std::move(var));
             }
         }
