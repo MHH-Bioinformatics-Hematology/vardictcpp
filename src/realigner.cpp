@@ -470,20 +470,59 @@ void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Regi
     auto& NIV = vd.nonInsertionVariants;
     for (const auto& t : tmp) {
         int position = t.position; const std::string& vn = t.desc; int insertionCount = t.count;
-        // BEGIN_PLUS_ATGC: insert = sequence after '+'. (dup/&/#/^ grammar not produced by this port.)
+        auto isATGC = [](char c){ return c=='A'||c=='C'||c=='G'||c=='T'; };
+        // Parse the insertion-description grammar (VariationRealigner.realignins): a complex insertion
+        // "+SEQ", optionally with "&extra", "#compm", "<dupN>ins3" or a "^N"/"^ATGC" tail. The old port
+        // only handled plain "+SEQ" and dropped any '&'/'#' insertion, so complex insertions never
+        // consumed their soft clips (and later plain insertions wrongly did).
         if (vn.empty() || vn[0] != '+') continue;
-        std::string insert = vn.substr(1);
-        for (auto& c : insert) if (!(c=='A'||c=='C'||c=='G'||c=='T')) { insert.clear(); break; }
+        std::string insert;   // BEGIN_PLUS_ATGC: leading ATGC run after '+'
+        for (size_t k = 1; k < vn.size() && isATGC(vn[k]); ++k) insert += vn[k];
         if (insert.empty()) continue;
-        std::string extra, compm; int newdel = 0; std::string ins3;
         int inslen = (int)insert.size();
-        std::string tn = insert;   // vn with +,&,#,^N,^ stripped == the plain inserted seq
+        std::string ins3;     // DUP_NUM_ATGC: <dup(\d+)>([ATGC]+)$
+        { size_t d = vn.find("<dup");
+          if (d != std::string::npos) { size_t gt = vn.find('>', d);
+            if (gt != std::string::npos) { int num = atoi(vn.c_str() + d + 4);
+              std::string tail = vn.substr(gt + 1);
+              bool allatgc = !tail.empty(); for (char c : tail) if (!isATGC(c)) allatgc = false;
+              if (allatgc) { ins3 = tail; inslen += num + (int)ins3.size(); } } } }
+        std::string extra;    // AMP_ATGC: &([ATGC]+)
+        { size_t a = vn.find('&');
+          if (a != std::string::npos) for (size_t k = a + 1; k < vn.size() && isATGC(vn[k]); ++k) extra += vn[k]; }
+        std::string compm;    // HASH_ATGC: #([ATGC]+)
+        { size_t h = vn.find('#');
+          if (h != std::string::npos) for (size_t k = h + 1; k < vn.size() && isATGC(vn[k]); ++k) compm += vn[k]; }
+        int newdel = 0;       // UP_NUMBER_END: \^(\d+)$
+        { size_t c = vn.rfind('^');
+          if (c != std::string::npos) { std::string tl = vn.substr(c + 1);
+            bool alldig = !tl.empty(); for (char ch : tl) if (!isdigit((unsigned char)ch)) alldig = false;
+            if (alldig) newdel = atoi(tl.c_str()); } }
+        // tn = vn stripped of: leading '+', first '&', first '#', trailing "^\d+", first '^'.
+        std::string tn = vn.substr(1);
+        { size_t a = tn.find('&'); if (a != std::string::npos) tn.erase(a, 1); }
+        { size_t h = tn.find('#'); if (h != std::string::npos) tn.erase(h, 1); }
+        { size_t c = tn.rfind('^');
+          if (c != std::string::npos) { bool alldig = c + 1 < tn.size();
+            for (size_t k = c + 1; k < tn.size(); ++k) if (!isdigit((unsigned char)tn[k])) alldig = false;
+            if (alldig) tn.erase(c); } }
+        { size_t c = tn.find('^'); if (c != std::string::npos) tn.erase(c, 1); }
 
         int wustart = position - 150 > 1 ? position - 150 : 1;
         std::string wupseq = joinRef(ref, wustart, position) + tn;
         int sanend = position + (int)vn.size() + 100;
-        std::string sanpseq = tn + joinRef(ref, position + (int)extra.size() + 1 + (int)compm.size() + newdel, sanend);
-        MismatchResult f3 = findMM3(vd, ref, position + 1, sanpseq);
+        std::string sanpseq;
+        int mm3anchor;
+        if (!ins3.empty()) {
+            int p3 = position + inslen - (int)ins3.size() + Config::SVFLANK;
+            if ((int)ins3.size() > Config::SVFLANK) sanpseq = substr(ins3, Config::SVFLANK - (int)ins3.size());
+            sanpseq += joinRef(ref, position + 1, position + 101);
+            mm3anchor = p3 + 1;
+        } else {
+            sanpseq = tn + joinRef(ref, position + (int)extra.size() + 1 + (int)compm.size() + newdel, sanend);
+            mm3anchor = position + 1;
+        }
+        MismatchResult f3 = findMM3(vd, ref, mm3anchor, sanpseq);
         MismatchResult f5 = findMM5(vd, ref, position + (int)extra.size() + (int)compm.size() + newdel, wupseq);
 
         std::vector<Mismatch> mmm = f3.mm; mmm.insert(mmm.end(), f5.mm.begin(), f5.mm.end());
