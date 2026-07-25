@@ -8,6 +8,8 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 namespace vardict {
 
@@ -551,30 +553,129 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 break;
             }
             case 'D': {
+                // Faithful port of CigarParser.processDeletion: the deletion description grows a
+                // trailing complex tail when the following CIGAR op is matched/inserted, producing
+                // "-N&ss" (D+M mismatch), "-N^ins" (D+I) or "-N#seg^..." (D+M+indel) instead of a
+                // bare "-N" that would split into a separate SNV/indel downstream.
                 carryOffset = 0;  // CigarParser resets offset before processing a deletion
-                int p = rpos; // first deleted reference position
-                if (p >= rlo && p <= rhi) {
-                    std::string dels;
-                    for (int i = 0; i < len; ++i) dels += ref_.at(rpos + i);
-                    std::string sig = "-" + std::to_string(len);
-                    out.positionToDeletionCount[p][sig]++;
-                    int q = qpos < (int)bseq.size() ? bqual[qpos] : 30;
+                // skipIndelNextToIntron: deletions adjacent to an intron (N) are ignored (RNA-seq).
+                if ((k + 1 < cigv.size() && cigv[k + 1].second == 'N') ||
+                    (k > 0 && cigv[k - 1].second == 'N')) {
+                    rpe += len;
+                    break;
+                }
+                std::string descStr = "-" + std::to_string(len);  // descStringOfDeletedElement
+                std::string ssAppend;                              // sequenceToAppendIfNextSegmentMatched
+                std::vector<int> qualSeg;                          // qualityOfSegment (decoded values)
+                int q1 = bqual[qpos - 1];                          // qualityOfLastSegmentBeforeDel
+                int multoffs = 0, multoffp = 0, nmoff = 0, offset = 0;
+
+                bool lr = cfg_.performLocalRealignment;
+                // isInsertionOrDeletionWithNextMatched: D, short M(<=vext), then I/D, then non-indel.
+                bool branchA = lr && k + 3 < cigv.size() &&
+                               cigv[k + 1].first <= cfg_.vext && cigv[k + 1].second == 'M' &&
+                               (cigv[k + 2].second == 'I' || cigv[k + 2].second == 'D') &&
+                               cigv[k + 3].second != 'I' && cigv[k + 3].second != 'D';
+                bool branchB = lr && k + 1 < cigv.size() && cigv[k + 1].second == 'I';
+                bool branchC = lr && k + 1 < cigv.size() && cigv[k + 1].second == 'M';
+
+                if (branchA) {
+                    int mLen = cigv[k + 1].first, indelLen = cigv[k + 2].first, begin = qpos;
+                    // appendSegments (isInsertion=false)
+                    descStr += "#" + bseq.substr(begin, mLen);
+                    for (int i = 0; i < mLen; i++) qualSeg.push_back(bqual[begin + i]);
+                    if (cigv[k + 2].second == 'I') {
+                        descStr += "^" + bseq.substr(begin + mLen, indelLen);
+                        for (int i = 0; i < indelLen; i++) qualSeg.push_back(bqual[begin + mLen + i]);
+                    } else {
+                        descStr += "^" + std::to_string(indelLen);  // D two-ahead: no quality appended
+                    }
+                    multoffs += mLen + (cigv[k + 2].second == 'D' ? indelLen : 0);
+                    multoffp += mLen + (cigv[k + 2].second == 'I' ? indelLen : 0);
+                    if (k + 3 < cigv.size() && cigv[k + 3].second == 'M') {
+                        int vsn = 0, tn = qpos + multoffp, ts = rpos + multoffs + len, seglen = cigv[k + 3].first;
+                        for (int vi = 0; vsn <= cfg_.vext && vi < seglen; vi++) {
+                            if (tn + vi >= (int)bseq.size() || bseq[tn + vi] == 'N') break;
+                            if (bqual[tn + vi] < cfg_.goodq) break;
+                            if (ref_.has(ts + vi) && ref_.at(ts + vi) == 'N') break;
+                            if (ref_.has(ts + vi)) {
+                                if (bseq[tn + vi] != ref_.at(ts + vi)) { offset = vi + 1; nmoff++; vsn = 0; }
+                                else vsn++;
+                            }
+                        }
+                        if (offset != 0) {
+                            ssAppend += bseq.substr(tn, offset);
+                            for (int i = 0; i < offset; i++) qualSeg.push_back(bqual[tn + i]);
+                        }
+                    }
+                    k += 2;
+                } else if (branchB) {
+                    int insLen = cigv[k + 1].first;
+                    descStr += "^" + bseq.substr(qpos, insLen);
+                    for (int i = 0; i < insLen; i++) qualSeg.push_back(bqual[qpos + i]);
+                    multoffp += insLen;
+                    if (k + 2 < cigv.size() && cigv[k + 2].second == 'M') {
+                        int mLen = cigv[k + 2].first, vsn = 0, tn = qpos + multoffp, ts = rpos + len;
+                        for (int vi = 0; vsn <= cfg_.vext && vi < mLen; vi++) {
+                            if (tn + vi >= (int)bseq.size() || bseq[tn + vi] == 'N') break;
+                            if (bqual[tn + vi] < cfg_.goodq) break;
+                            if (ref_.has(ts + vi)) {
+                                if (ref_.at(ts + vi) == 'N') break;
+                                if (bseq[tn + vi] != ref_.at(ts + vi)) { offset = vi + 1; nmoff++; vsn = 0; }
+                                else vsn++;
+                            }
+                        }
+                        if (offset != 0) {
+                            ssAppend += bseq.substr(tn, offset);
+                            for (int i = 0; i < offset; i++) qualSeg.push_back(bqual[tn + i]);
+                        }
+                    }
+                    k += 1;
+                } else if (branchC) {
+                    int mLen = cigv[k + 1].first, vsn = 0;
+                    for (int vi = 0; vsn <= cfg_.vext && vi < mLen; vi++) {
+                        if (qpos + vi >= (int)bseq.size() || bseq[qpos + vi] == 'N') break;
+                        if (bqual[qpos + vi] < cfg_.goodq) break;
+                        if (ref_.has(rpos + len + vi)) {
+                            if (ref_.at(rpos + len + vi) == 'N') break;
+                            if (bseq[qpos + vi] != ref_.at(rpos + len + vi)) { offset = vi + 1; nmoff++; vsn = 0; }
+                            else vsn++;
+                        }
+                    }
+                    if (offset != 0) {
+                        ssAppend += bseq.substr(qpos, offset);
+                        for (int i = 0; i < offset; i++) qualSeg.push_back(bqual[qpos + i]);
+                    }
+                }
+
+                if (offset > 0) descStr += "&" + ssAppend;
+                // quality of first matched base after the deletion: best of q1 and q2.
+                if (qpos + offset >= (int)bseq.size()) qualSeg.push_back(q1);
+                else { int q2 = bqual[qpos + offset]; qualSeg.push_back(q1 > q2 ? q1 : q2); }
+
+                // addVariationForDeletion (only when the deletion start is inside the region).
+                if (rpos >= rlo && rpos <= rhi) {
+                    out.positionToDeletionCount[rpos][descStr]++;
+                    Variation& v = out.nonInsertionVariants[rpos][descStr];
                     int tp = foldPos(rpe);
-                    Variation& v = out.nonInsertionVariants[p][sig];
+                    double tmpq = 0; for (int qv : qualSeg) tmpq += qv; tmpq /= qualSeg.size();
+                    if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
+                    if (!v.qstd && v.pq != 0 && tmpq != v.pq) v.qstd = true;
                     v.varsCount++;
                     v.incDir(reverse);
                     v.meanPosition += tp;
-                    v.meanQuality += q;
+                    v.meanQuality += tmpq;
                     v.meanMappingQuality += mapq;
-                    v.numberOfMismatches += nm;
-                    v.highQualityReadsCount++;
+                    v.pp = tp; v.pq = tmpq;
+                    v.numberOfMismatches += nm - nmoff;
+                    if (tmpq >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
+                    // increase coverage for reference bases missing from the read
+                    for (int i = 0; i < len; ++i) out.refCoverage[rpos + i]++;
                 }
-                // addVariationForDeletion (CigarParser.java:1791): "increase coverage count for
-                // reference bases missing from the read" -- a deletion read counts toward total
-                // position coverage at every deleted base, so Depth at the deletion includes it.
-                for (int i = 0; i < len; ++i)
-                    if (rpos + i >= rlo && rpos + i <= rhi) out.refCoverage[rpos + i]++;
-                rpos += len;
+                rpos += len + offset + multoffs;
+                qpos += offset + multoffp;
+                rpe += offset + multoffp;
+                carryOffset = offset;
                 break;
             }
             case 'N':
