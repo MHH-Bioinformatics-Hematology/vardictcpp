@@ -16,6 +16,73 @@ static int strandBias(int fwd, int rev, int minBiasReads, double bias) {
     return ok ? 2 : 1;
 }
 
+// Ports ToVarsBuilder's complex-descriptor decoding (lines 765-846): AMP_ATGC "&([ATGC]+)",
+// HASH_GROUP_CARET_GROUP "#(.+)\\^(.+)" and CARET_ATGNC "\\^([ATGNC]+)". Turns a raw CigarParser
+// complex description (e.g. insertion "+A&CT", deletion "-2&AC^G#TT") into the realized
+// refallele/varallele plus adjusted start/end positions, mirroring VarDictJava byte-for-byte.
+// `descriptionString` is the original allele; refallele/varallele are seeded by the caller.
+static void applyComplexGrammar(const std::string& descriptionString, Reference& ref,
+                                std::string& refallele, std::string& varallele,
+                                int& startPos, int& endPos, std::string& genotype1current) {
+    auto joinRefLocal = [&](int from, int to) {
+        std::string r; for (int i = from; i <= to; ++i) if (ref.has(i)) r += ref.at(i); return r;
+    };
+    // First "&([ATGC]+)" group in s (>=1 ATGC after '&'); empty string == no match.
+    auto ampGroup = [](const std::string& s) -> std::string {
+        auto amp = s.find('&'); if (amp == std::string::npos) return "";
+        std::string g;
+        for (size_t i = amp + 1; i < s.size(); ++i) { char c = s[i]; if (c=='A'||c=='T'||c=='G'||c=='C') g += c; else break; }
+        return g;
+    };
+    auto eraseFirst = [](std::string& s, char c) { auto p = s.find(c); if (p != std::string::npos) s.erase(p, 1); };
+
+    // AMP_ATGC: variant followed by matched reference sequence.
+    std::string extra = ampGroup(descriptionString);
+    if (!extra.empty()) {
+        eraseFirst(varallele, '&');
+        std::string tch = joinRefLocal(endPos + 1, endPos + (int)extra.size());
+        refallele += tch; genotype1current += tch; endPos += (int)extra.size();
+        std::string vextra = ampGroup(varallele);
+        if (!vextra.empty()) {
+            eraseFirst(varallele, '&');
+            std::string tch2 = joinRefLocal(endPos + 1, endPos + (int)vextra.size());
+            refallele += tch2; genotype1current += tch2; endPos += (int)vextra.size();
+        }
+        if (!descriptionString.empty() && descriptionString[0] == '+') {
+            if (!refallele.empty()) refallele = refallele.substr(1);
+            if (!varallele.empty()) varallele = varallele.substr(1);
+            startPos++;
+        }
+    }
+
+    // HASH_GROUP_CARET_GROUP "#(.+)\\^(.+)": short matched sequence + indel tail. Greedy group(1)
+    // runs from the first '#' to the LAST '^'.
+    {
+        auto hp = descriptionString.find('#');
+        auto cp = descriptionString.rfind('^');
+        if (hp != std::string::npos && cp != std::string::npos && cp > hp + 1 && cp + 1 < descriptionString.size()) {
+            std::string matchedSequence = descriptionString.substr(hp + 1, cp - (hp + 1));
+            std::string tail = descriptionString.substr(cp + 1);
+            endPos += (int)matchedSequence.size();
+            refallele += joinRefLocal(endPos - (int)matchedSequence.size() + 1, endPos);
+            int d = 0; size_t z = 0; while (z < tail.size() && isdigit((unsigned char)tail[z])) { d = d*10 + (tail[z]-'0'); z++; }
+            if (z > 0) { refallele += joinRefLocal(endPos + 1, endPos + d); endPos += d; }
+            eraseFirst(varallele, '#');
+            auto vc = varallele.find('^');
+            if (vc != std::string::npos) { size_t e = vc + 1; while (e < varallele.size() && isdigit((unsigned char)varallele[e])) e++; varallele.erase(vc, e - vc); }
+        }
+    }
+
+    // CARET_ATGNC "\\^([ATGNC]+)": deletion followed directly by insertion.
+    {
+        auto cp = descriptionString.find('^');
+        if (cp != std::string::npos && cp + 1 < descriptionString.size()) {
+            char c = descriptionString[cp + 1];
+            if (c=='A'||c=='T'||c=='G'||c=='N'||c=='C') { auto vc = varallele.find('^'); if (vc != std::string::npos) varallele.erase(vc, 1); }
+        }
+    }
+}
+
 // Port of variations/Variant.java isGoodVar for the simple single-sample path. Reference-allele
 // stats (hicnt, mean mapping quality) are passed in from the position's ref accumulator. MSI columns
 // default to 0 until findMSI is ported, so the two MSI gates are inactive (matches a no-MSI position).
@@ -358,22 +425,37 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.pstd  = v.pstd ? 1 : 0;
                 var.qstd  = v.qstd ? 1 : 0;
                 var.hicnt = v.highQualityReadsCount; var.hicov = hicov;
-                var.refallele = std::string(1, refBase);
-                var.varallele = std::string(1, refBase) + allele.substr(1);
-                var.vartype = "Insertion";
-                // genotype2 for an insertion is "+<length>" (e.g. T/+1); genotype1 = ref allele if present.
+                // A complex insertion ("+X&Y", "+...#...^...") carries a matched-sequence / indel tail
+                // from CigarParser's M+I bridging; decode it into the realized ref/var alleles and
+                // adjusted positions (ToVarsBuilder). Simple insertions keep the fast path + MSI.
+                bool complexIns = allele.find('&') != std::string::npos ||
+                                  allele.find('#') != std::string::npos ||
+                                  allele.find("<dup") != std::string::npos;
+                std::string refAll = std::string(1, refBase);
+                std::string varAll = std::string(1, refBase) + allele.substr(1);
+                int startPos = position, endPos = position;
+                double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+                std::string g2 = "+" + std::to_string((int)allele.size() - 1);
+                std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : g2;
+                if (complexIns) {
+                    applyComplexGrammar(allele, ref, refAll, varAll, startPos, endPos, g1);
+                    var.vartype = classifyType(refAll, varAll);
+                } else {
+                    var.vartype = "Insertion";
+                }
+                var.refallele = refAll;
+                var.varallele = varAll;
+                var.startPosition = startPos;
+                var.endPosition = endPos;
                 {
-                    double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
-                    std::string g2 = "+" + std::to_string((int)allele.size() - 1);
-                    std::string g1 = (refFreq >= freq) ? var.refallele : g2;
-                    var.genotype = g1 + "/" + g2;
+                    std::string genotype = g1 + "/" + g2;
+                    std::string cleaned;
+                    for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
+                    var.genotype = cleaned;
                 }
                 var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
                 var.duprate = vd.duprate();
-                // MSI for insertion (ToVarsBuilder.proceedVrefIsInsertion): tseq1 = inserted bases,
-                // leftseq = ref[p-50..p], tseq2 = ref[p+1..p+70]; take max(with-left, without-left) and
-                // a shift3/len floor.
-                {
+                if (!complexIns) {   // MSI is skipped for complex insertions (proceedVrefIsInsertion not called)
                     std::string ins = allele.substr(1);
                     std::string leftseq, tseq2;
                     for (int q = position - 50; q <= position; ++q) if (q >= 1) leftseq += ref.at(q);
@@ -391,7 +473,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads, cfg.bias))
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
-                for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(position + i);
+                for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
                 if (!cfg.doPileup && !isGoodVar(cfg, var, refHicnt, refMeanMapq)) continue;
                 result.push_back(std::move(var));
             }
@@ -623,18 +705,37 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 var.pstd  = v.pstd ? 1 : 0;
                 var.qstd  = v.qstd ? 1 : 0;
                 var.hicnt = v.highQualityReadsCount; var.hicov = hicov;
-                var.refallele = std::string(1, refBase);
-                var.varallele = std::string(1, refBase) + allele.substr(1);
-                var.vartype = "Insertion";
+                // A complex insertion ("+X&Y", "+...#...^...") carries a matched-sequence / indel tail
+                // from CigarParser's M+I bridging; decode it into the realized ref/var alleles and
+                // adjusted positions (ToVarsBuilder). Simple insertions keep the fast path + MSI.
+                bool complexIns = allele.find('&') != std::string::npos ||
+                                  allele.find('#') != std::string::npos ||
+                                  allele.find("<dup") != std::string::npos;
+                std::string refAll = std::string(1, refBase);
+                std::string varAll = std::string(1, refBase) + allele.substr(1);
+                int startPos = position, endPos = position;
+                double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
+                std::string g2 = "+" + std::to_string((int)allele.size() - 1);
+                std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : g2;
+                if (complexIns) {
+                    applyComplexGrammar(allele, ref, refAll, varAll, startPos, endPos, g1);
+                    var.vartype = classifyType(refAll, varAll);
+                } else {
+                    var.vartype = "Insertion";
+                }
+                var.refallele = refAll;
+                var.varallele = varAll;
+                var.startPosition = startPos;
+                var.endPosition = endPos;
                 {
-                    double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
-                    std::string g2 = "+" + std::to_string((int)allele.size() - 1);
-                    std::string g1 = (refFreq >= freq) ? var.refallele : g2;
-                    var.genotype = g1 + "/" + g2;
+                    std::string genotype = g1 + "/" + g2;
+                    std::string cleaned;
+                    for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
+                    var.genotype = cleaned;
                 }
                 var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
                 var.duprate = vd.duprate();
-                {
+                if (!complexIns) {   // MSI is skipped for complex insertions (proceedVrefIsInsertion not called)
                     std::string ins = allele.substr(1);
                     std::string leftseq, tseq2;
                     for (int q = position - 50; q <= position; ++q) if (q >= 1) leftseq += ref.at(q);
@@ -652,7 +753,7 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads, cfg.bias))
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
-                for (int i = 1; i <= 20; ++i) var.rightseq += ref.at(position + i);
+                for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
                 // Insertion description strings are stored under "+<seq>" like createInsertion's key.
                 record(std::move(var), allele);
             }

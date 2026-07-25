@@ -37,6 +37,17 @@ static void adjInsPos(int& bi, std::string& ins, Reference& ref) {
     if (n > 1) ins = substr(ins, 1 - n) + substr(ins, 0, 1 - n);
 }
 
+// CigarParser.isBEGIN_ATGC_AMP_ATGCs_END: true iff `s` is one A/T/G/C base, then '&', then one or
+// more A/T/G/C bases (a pure MNV descriptor "X&YZ..."). Deletion ("-N&...") / insertion ("+...&...")
+// descriptors do NOT match, so they are never recorded as MNVs.
+static inline bool isMnpDesc(const std::string& s) {
+    if (s.size() <= 2) return false;
+    auto isATGC = [](char c) { return c == 'A' || c == 'T' || c == 'G' || c == 'C'; };
+    if (s[1] != '&' || !isATGC(s[0])) return false;
+    for (size_t i = 2; i < s.size(); ++i) if (!isATGC(s[i])) return false;
+    return true;
+}
+
 // VariationUtils.addCnt: accumulate one observation into a Variation (no pstd/qstd; those are set
 // only in the matching-part increment).
 static inline void addCnt(Variation& v, bool dir, int readPosition, double baseQuality,
@@ -290,6 +301,39 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             return posExclSc < rlen - posExclSc ? posExclSc + 1 : rlen - posExclSc;
         };
 
+        // CigarParser 'offset': number of bases of the FOLLOWING matched segment already consumed by
+        // a complex variant on the current segment (findOffset). Persists into the next M segment
+        // (its inner loop starts at i=offset) and is reset to 0 on I/D/H/S segments. Reset per read.
+        int carryOffset = 0;
+
+        // CigarParser.findOffset: scan up to `cigarLen` bases of the next matched segment, extending an
+        // offset while bases stay within conf.vext of a mismatch. Returns how many bases to fold into
+        // the complex variant, the base sequence, per-base quality values, and the mismatch count; also
+        // bumps refCoverage for the folded bases (as VarDict does).
+        struct OffsetRes { int offset; std::string ss; std::vector<int> quals; int tnm; };
+        auto findOffset = [&](int refPos, int readPos, int cigarLen) -> OffsetRes {
+            OffsetRes r{0, "", {}, 0};
+            int vsn = 0;
+            for (int vi = 0; vsn <= cfg_.vext && vi < cigarLen; vi++) {
+                if (readPos + vi >= (int)bseq.size()) break;
+                if (bseq[readPos + vi] == 'N') break;
+                if (bqual[readPos + vi] < cfg_.goodq) break;
+                if (ref_.has(refPos + vi)) {
+                    if (bseq[readPos + vi] != ref_.at(refPos + vi)) { r.offset = vi + 1; r.tnm++; vsn = 0; }
+                    else vsn++;
+                }
+            }
+            if (r.offset > 0) {
+                r.ss = bseq.substr(readPos, r.offset);
+                for (int osi = 0; osi < r.offset; osi++) {
+                    r.quals.push_back(bqual[readPos + osi]);
+                    int cp = refPos + osi;
+                    if (cp >= rlo && cp <= rhi) out.refCoverage[cp]++;
+                }
+            }
+            return r;
+        };
+
         for (uint32_t k = 0; k < cigv.size(); ++k) {
             char op = cigv[k].second;
             int len = cigv[k].first;
@@ -297,58 +341,113 @@ bool CigarParser::process(const Region& region, VariationData& out) {
             case 'M':
             case '=':
             case 'X': {
-                // Faithful port of CigarParser's matching-part loop with MNV growth: adjacent
-                // mismatches (bridging up to vext matching bases) are grown into a single variant
-                // whose description string joins the leading base(s) and the grown tail with '&'
-                // (e.g. "A&CG"). Single-base matches (the common case) reduce to one variation "X".
-                // Adjacent-indel bridging within an M-segment (the '^'/'#'/'-N&' grammar) is not
-                // grown here; those complex cases are left to the I/D handlers.
-                int i = 0;
-                // nmoff accumulates over the WHOLE M-segment (declared once, like CigarParser.java):
-                // each consecutive-mismatch base absorbed into an MNV increments it, and every
-                // variation in this segment contributes (nm - nmoff) so the read's per-base mismatches
-                // that were merged into an MNV are not double-counted as "other" mismatches.
-                int nmoff = 0;
+                // Faithful port of CigarParser's matching-part loop (per-base, mutating rpos/qpos/rpe
+                // like VarDictJava's start/readPositionIncludingSoftClipped/readPositionExcludingSoftClipped).
+                // Grows adjacent mismatches into MNVs ("A&CG"), and — the piece previously deferred —
+                // bridges the trailing base(s) of this M-segment into a following Deletion ("-N&...",
+                // with '^' two-insertions-ahead and a findOffset '&' tail) or Insertion ("+X&YZ"),
+                // producing one complex variant instead of a split SNV + indel.
+                int nmoff = 0;      // consecutive mismatches merged into MNVs (not double-counted as "other")
+                int moffset = 0;    // findOffset carry into the next M segment
+                int i = carryOffset;
                 while (i < len) {
-                    int gref = rpos + i;         // moving reference position (VarDict 'start')
-                    int gq   = qpos + i;         // moving query offset (incl. soft-clip)
-                    int grpe = rpe + i;          // moving readPositionExcludingSoftClipped
-                    char ch1 = bseq[gq];
-                    if (ch1 == 'N') { i++; continue; }
-                    double q = bqual[gq];
-                    int qbases = 1;
+                    char ch1 = bseq[qpos];
+                    if (ch1 == 'N') { rpos++; qpos++; rpe++; i++; continue; }
+                    double q = bqual[qpos];
+                    int qbases = 1;     // bases counted for reference coverage / position averaging
+                    int qibases = 0;    // inserted bases counted only for quality averaging
                     std::string s(1, ch1);
                     std::string ss;
+                    bool startWithDeletion = false;
+                    int ddlen = 0;
                     // Grow MNV while the current base mismatches the reference and quality is good.
-                    while ((gref + 1) >= rlo && (gref + 1) <= rhi && (i + 1) < len &&
+                    while ((rpos + 1) >= rlo && (rpos + 1) <= rhi && (i + 1) < len &&
                            q >= cfg_.goodq &&
-                           ref_.at(gref) != bseq[gq] && ref_.at(gref) != 'N') {
-                        if (bqual[gq + 1] < cfg_.goodq + 5) break;
-                        char nuc = bseq[gq + 1];
+                           ref_.has(rpos) && ref_.at(rpos) != bseq[qpos] && ref_.at(rpos) != 'N') {
+                        if (bqual[qpos + 1] < cfg_.goodq + 5) break;
+                        char nuc = bseq[qpos + 1];
                         if (nuc == 'N') break;
-                        if (ref_.at(gref + 1) == 'N') break;
-                        if (ref_.at(gref + 1) != nuc) {           // next base also mismatches
-                            ss += nuc; q += bqual[gq + 1]; qbases++;
-                            gq++; gref++; grpe++; i++;
-                            nmoff++;                              // CigarParser.java: nmoff++ per absorbed consecutive mismatch
+                        if (ref_.has(rpos + 1) && ref_.at(rpos + 1) == 'N') break;
+                        if (!(ref_.has(rpos + 1) && ref_.at(rpos + 1) == nuc)) {  // next base also mismatches
+                            ss += nuc; q += bqual[qpos + 1]; qbases++;
+                            qpos++; rpe++; i++; rpos++;
+                            nmoff++;
                         } else {                                  // bridge matching bases to next mismatch within vext
                             int ssn = 0;
                             for (int ssi = 1; ssi <= cfg_.vext; ssi++) {
                                 if (i + 1 + ssi >= len) break;
-                                if (bseq[gq + 1 + ssi] != ref_.at(gref + 1 + ssi)) { ssn = ssi + 1; break; }
+                                if (qpos + 1 + ssi < (int)bseq.size() && ref_.has(rpos + 1 + ssi) &&
+                                    bseq[qpos + 1 + ssi] != ref_.at(rpos + 1 + ssi)) { ssn = ssi + 1; break; }
                             }
                             if (ssn == 0) break;
-                            if (bqual[gq + ssn] < cfg_.goodq + 5) break;
-                            for (int ssi = 1; ssi <= ssn; ssi++) { ss += bseq[gq + ssi]; q += bqual[gq + ssi]; qbases++; }
-                            gq += ssn; gref += ssn; grpe += ssn; i += ssn;
+                            if (bqual[qpos + ssn] < cfg_.goodq + 5) break;
+                            for (int ssi = 1; ssi <= ssn; ssi++) { ss += bseq[qpos + ssi]; q += bqual[qpos + ssi]; qbases++; }
+                            qpos += ssn; rpe += ssn; i += ssn; rpos += ssn;
                         }
                     }
                     if (!ss.empty()) s += "&" + ss;
-                    int pos = gref - qbases + 1;                  // leftmost covered position
-                    double qavg = q / qbases;
-                    int tp = grpe < rlen - grpe ? grpe + 1 : rlen - grpe;
+
+                    // isCloserThenVextAndGoodBase: near the end of this M segment (within vext), with a
+                    // mismatch (or grown MNV) at good quality and the next CIGAR op being cop.
+                    auto closerGood = [&](char cop) -> bool {
+                        if (k + 2 < cigv.size() && cigv[k + 2].second == 'H') return false;
+                        return cfg_.performLocalRealignment && (len - i) <= cfg_.vext &&
+                               (k + 1) < cigv.size() && cigv[k + 1].second == cop &&
+                               ref_.has(rpos) &&
+                               (!ss.empty() || bseq[qpos] != ref_.at(rpos)) &&
+                               bqual[qpos] >= cfg_.goodq;
+                    };
+
+                    if (closerGood('D')) {
+                        while (i + 1 < len) {                     // fold remaining M bases into s
+                            s += bseq[qpos + 1]; q += bqual[qpos + 1]; qbases++;
+                            i++; qpos++; rpe++; rpos++;
+                        }
+                        auto amp = s.find('&'); if (amp != std::string::npos) s.erase(amp, 1);
+                        ddlen = cigv[k + 1].first;
+                        s = "-" + std::to_string(ddlen) + "&" + s;
+                        startWithDeletion = true;
+                        k += 1;                                   // consume the D segment
+                        if (k + 1 < cigv.size() && cigv[k + 1].second == 'I') {   // insertion two ahead
+                            int n2 = cigv[k + 1].first;
+                            s += "^" + bseq.substr(qpos + 1, n2);
+                            for (int qi = 1; qi <= n2; qi++) { q += bqual[qpos + 1 + qi]; qibases++; }
+                            qpos += n2; rpe += n2;
+                            k += 1;                               // consume the I segment
+                        }
+                        if (k + 1 < cigv.size() && cigv[k + 1].second == 'M') {   // extend into next M
+                            OffsetRes tpl = findOffset(rpos + ddlen + 1, qpos + 1, cigv[k + 1].first);
+                            if (tpl.offset != 0) {
+                                moffset = tpl.offset;
+                                nmoff += tpl.tnm;
+                                s += "&" + tpl.ss;
+                                for (int qv : tpl.quals) { q += qv; qibases++; }
+                            }
+                        }
+                    } else if (closerGood('I')) {
+                        while (i + 1 < len) {                     // fold remaining M bases into s
+                            s += bseq[qpos + 1]; q += bqual[qpos + 1]; qbases++;
+                            i++; qpos++; rpe++; rpos++;
+                        }
+                        auto amp = s.find('&'); if (amp != std::string::npos) s.erase(amp, 1);
+                        int n2 = cigv[k + 1].first;
+                        s += bseq.substr(qpos + 1, n2);
+                        s = s.substr(0, n2) + "&" + s.substr(n2);
+                        s = "+" + s;
+                        for (int qi = 1; qi <= n2; qi++) { q += bqual[qpos + 1 + qi]; qibases++; }
+                        qpos += n2; rpe += n2;
+                        k += 1;                                   // consume the I segment
+                        qibases--; qbases++;                      // set the correct insertion anchor position
+                    }
+
+                    int pos = rpos - qbases + 1;                  // leftmost covered position
                     if (pos >= rlo && pos <= rhi && s.find('N') == std::string::npos) {
-                        Variation& v = out.nonInsertionVariants[pos][s];
+                        double qavg = q / (qbases + qibases);
+                        int tp = rpe < rlen - rpe ? rpe + 1 : rlen - rpe;
+                        bool isIns = (!s.empty() && s[0] == '+');
+                        if (isIns) out.positionToInsertionCount[pos][s]++;
+                        else if (isMnpDesc(s)) out.mnp[pos][s]++;
+                        Variation& v = (isIns ? out.insertionVariants : out.nonInsertionVariants)[pos][s];
                         if (!v.pstd && v.pp != 0 && tp != v.pp) v.pstd = true;
                         if (!v.qstd && v.pq != 0 && qavg != v.pq) v.qstd = true;
                         v.varsCount++;
@@ -356,24 +455,33 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                         v.meanPosition += tp;
                         v.meanQuality += qavg;
                         v.meanMappingQuality += mapq;
-                        v.numberOfMismatches += nm - nmoff;      // subtract mismatches merged into MNVs earlier in this segment
+                        v.numberOfMismatches += nm - nmoff;
                         v.pp = tp; v.pq = qavg;
                         if (qavg >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
                         // reference coverage for every base covered by this variation
-                        for (int qi = 1; qi <= qbases; ++qi) {
-                            int cp = gref - qi + 1;
+                        int shift = (isIns && s.find('&') != std::string::npos) ? 1 : 0;
+                        for (int qi = 1; qi <= qbases - shift; ++qi) {
+                            int cp = rpos - qi + 1;
                             if (cp >= rlo && cp <= rhi) out.refCoverage[cp]++;
                         }
-                        // MNP bookkeeping (one base + '&' + more bases)
-                        if (ss.size() >= 1 && s.find('&') != std::string::npos)
-                            out.mnp[pos][s]++;
+                        if (startWithDeletion) {
+                            out.positionToDeletionCount[pos][s]++;
+                            for (int qi = 1; qi < ddlen; qi++) {
+                                int cp = rpos + qi;
+                                if (cp >= rlo && cp <= rhi) out.refCoverage[cp]++;
+                            }
+                        }
                     }
+                    if (startWithDeletion) rpos += ddlen;
+                    rpos++; qpos++; rpe++;                        // advance past the current base (M: ref+read)
                     i++;
                 }
-                rpos += len; qpos += len; rpe += len;
+                carryOffset = 0;
+                if (moffset != 0) { carryOffset = moffset; qpos += moffset; rpos += moffset; rpe += moffset; }
                 break;
             }
             case 'I': {
+                carryOffset = 0;  // CigarParser resets offset before processing an insertion
                 int p = rpos - 1; // insertion anchored to preceding reference base (VarDict convention)
                 std::string ins;
                 double qsum = 0;
@@ -403,6 +511,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 break;
             }
             case 'D': {
+                carryOffset = 0;  // CigarParser resets offset before processing a deletion
                 int p = rpos; // first deleted reference position
                 if (p >= rlo && p <= rhi) {
                     std::string dels;
@@ -506,9 +615,12 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     }
                 }
                 qpos += len;
+                carryOffset = 0;  // processSoftClip resets offset
                 break;
             }
             case 'H':
+                carryOffset = 0;  // hard-clip resets offset
+                break;
             case 'P':
             default:
                 break;
