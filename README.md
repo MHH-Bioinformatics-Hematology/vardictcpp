@@ -1,5 +1,7 @@
 # vardictcpp
 
+[![CI](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/actions/workflows/ci.yml/badge.svg)](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/actions/workflows/ci.yml)
+
 A C++17 port of [VarDict](https://github.com/AstraZeneca-NGS/VarDictJava) (AstraZeneca-NGS),
 built with htslib. Goal: a memory-lean, fast native implementation of the VarDict amplicon/somatic
 variant caller. This repository is the **staged port**; see *Parity status* for what is implemented
