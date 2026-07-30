@@ -173,10 +173,22 @@ static MSIResult findMSI(const std::string& tseq1, const std::string& tseq2, con
 // %.4f uses the default IEEE round-to-nearest-even. VarDict stores the *rounded* frequency in
 // createVariant BEFORE the position-level `maxfreq <= freq` filter, so a variant at 3/299 = 0.010033
 // rounds to 0.0100 and is dropped; comparing the unrounded value would wrongly keep it.
-static double round4(double x) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.4f", x);
+static double roundN(double x, int n) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.*f", n, x);
     return std::atof(buf);
+}
+static double round4(double x) { return roundN(x, 4); }
+
+// isGoodVar in Java tests the *stored* (rounded) pmean/qmean/mapq/msi and referenceVar.meanMappingQuality
+// (ToVarsBuilder rounds HALF_EVEN before storing: pmean/qmean/mapq to 1 dp, msi to 3 dp). Round the
+// filter probe the same way so boundary rows (e.g. qmean 22.46 -> 22.5) match Java's keep/drop decision.
+static void roundProbeForFilter(Variant& probe) {
+    probe.frequency = round4(probe.frequency);
+    probe.pmean = roundN(probe.pmean, 1);
+    probe.qmean = roundN(probe.qmean, 1);
+    probe.mapq  = roundN(probe.mapq, 1);
+    probe.msi   = roundN(probe.msi, 3);
 }
 
 // Port of Variant.varType() (classify by realized ref/alt alleles, not the raw description).
@@ -524,8 +536,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             // isGoodVar sees the Java-rounded frequency (Variant.isGoodVar tests the *formatted* AF):
             // a variant at exactly -f (raw 0.009966 -> 0.0100) passes the `frequency < -f` gate, matching
             // VarDictJava, while the stored var.frequency stays raw for identical output formatting.
-            { Variant probe = var; probe.frequency = round4(var.frequency);
-              if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, refMeanMapq)) continue; }
+            { Variant probe = var; roundProbeForFilter(probe);
+              if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1))) continue; }
             if (var.vartype == "Complex") adjComplexVar(var);   // SimplePostProcessModule.adjComplex
             result.push_back(std::move(var));
         }
@@ -606,8 +618,8 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
-                { Variant probe = var; probe.frequency = round4(var.frequency);
-                  if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, refMeanMapq)) continue; }
+                { Variant probe = var; roundProbeForFilter(probe);
+                  if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1))) continue; }
                 if (var.vartype == "Complex") adjComplexVar(var);   // SimplePostProcessModule.adjComplex
                 result.push_back(std::move(var));
             }
@@ -695,8 +707,8 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             // isGoodVar sees the Java-rounded frequency so a variant at exactly -f (rounds to 0.0100)
             // is retained; the stored frequency stays raw (formatting rounds identically for output).
             Variant probe = var;
-            probe.frequency = round4(var.frequency);
-            var.good = isGoodVar(cfg, probe, refHicnt, refMeanMapq);
+            roundProbeForFilter(probe);
+            var.good = isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1));
             sp.variants.push_back(std::move(var));
         };
 
