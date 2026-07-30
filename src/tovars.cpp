@@ -318,6 +318,49 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             if (!cfg.doPileup && freq > 0 && maxfreq <= freq) continue;   // drop the whole position
         }
 
+        // createInsertion coverage reconciliation (Findings 2a,2c,2d) + collectReferenceVariants pos+1
+        // swap (2b), computed read-only (vd is const): running over insertions in sorted order, the
+        // position coverage is bumped for '&'/dominant insertions, and the dominant insertion's fwd/rev
+        // are subtracted from the pos+1 reference variant. The final coverage is the Depth of every
+        // variant here, and when it exceeds refCoverage[position] the RefFwd/RefRev are re-sourced from
+        // that (reduced) pos+1 reference variant.
+        int finalTotalCov = totalCov;
+        int refFwdOut = refVar ? refVar->varsCountOnForward : 0;
+        int refRevOut = refVar ? refVar->varsCountOnReverse : 0;
+        {
+            auto c1it = vd.refCoverage.find(position + 1);
+            int cov1 = (c1it != vd.refCoverage.end()) ? c1it->second : -1;
+            int subFwd = 0, subRev = 0;
+            auto insR = vd.insertionVariants.find(position);
+            if (insR != vd.insertionVariants.end()) {
+                int runningCov = totalCov;
+                for (const auto& [al, vv] : insR->second) {     // std::map sorted == Java Collections.sort
+                    if (al.find('&') != std::string::npos && cov1 >= 0) runningCov = cov1;
+                    int ttcov = runningCov;
+                    if (vv.varsCount > runningCov && vv.extracnt != 0 && vv.varsCount - runningCov < vv.extracnt) ttcov = vv.varsCount;
+                    if (ttcov < vv.varsCount) {
+                        ttcov = vv.varsCount;
+                        if (cov1 >= 0 && ttcov < cov1 - vv.varsCount) {
+                            ttcov = cov1;
+                            subFwd += vv.varsCountOnForward; subRev += vv.varsCountOnReverse;
+                        }
+                        runningCov = ttcov;
+                    }
+                }
+                finalTotalCov = runningCov;
+            }
+            if (finalTotalCov > totalCov) {   // totalCov == refCoverage[position]
+                auto p1 = vd.nonInsertionVariants.find(position + 1);
+                if (p1 != vd.nonInsertionVariants.end() && ref.has(position + 1)) {
+                    auto rv1 = p1->second.find(std::string(1, ref.at(position + 1)));
+                    if (rv1 != p1->second.end()) {
+                        refFwdOut = rv1->second.varsCountOnForward - subFwd;
+                        refRevOut = rv1->second.varsCountOnReverse - subRev;
+                    }
+                }
+            }
+        }
+
         for (const auto& [allele, v] : alleleMap) {
             if (allele.size() == 1 && allele[0] == refBase) continue; // skip pure reference
             if (v.varsCount < cfg.minReads) continue;
@@ -326,11 +369,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             Variant var;
             var.startPosition = position;
             var.endPosition = position;
-            var.totalPosCoverage = totalCov;
+            var.totalPosCoverage = finalTotalCov;
             var.varsCount = v.varsCount;
             var.varFwd = v.varsCountOnForward;
             var.varRev = v.varsCountOnReverse;
-            if (refVar) { var.refFwd = refVar->varsCountOnForward; var.refRev = refVar->varsCountOnReverse; }
+            var.refFwd = refFwdOut; var.refRev = refRevOut;
             var.frequency = af;
             var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
             var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
@@ -553,9 +596,9 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 // surviving position, subject to isGoodVar).
                 Variant var;
                 var.startPosition = position; var.endPosition = position;
-                var.totalPosCoverage = totalCov; var.varsCount = v.varsCount;
+                var.totalPosCoverage = finalTotalCov; var.varsCount = v.varsCount;
                 var.varFwd = v.varsCountOnForward; var.varRev = v.varsCountOnReverse;
-                if (refVar) { var.refFwd = refVar->varsCountOnForward; var.refRev = refVar->varsCountOnReverse; }
+                var.refFwd = refFwdOut; var.refRev = refRevOut;
                 var.frequency = af;
                 var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
                 var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
