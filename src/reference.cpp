@@ -48,13 +48,19 @@ void Reference::ensure(int start, int end) {
 }
 
 void Reference::buildSeed() const {
-    seed_.clear();
+    seed17_.clear(); seed12_.clear();
     seedBuilt_ = true;
-    int n = (int)seq_.size();
-    for (int i = 0; i + SEED_1 <= n; ++i)
-        seed_[seq_.substr(i, SEED_1)].push_back(i + loadedStart_);
-    for (int i = 0; i + SEED_2 <= n; ++i)
-        seed_[seq_.substr(i, SEED_2)].push_back(i + loadedStart_);
+    const int n = (int)seq_.size();
+    if (n > 0) seed17_.reserve((size_t)n);
+    const char* s = seq_.data();
+    for (int i = 0; i + SEED_1 <= n; ++i) {
+        auto r = seed17_.emplace(encodeKmer(s + i, SEED_1), i + loadedStart_);
+        if (!r.second) r.first->second = 0;               // second occurrence -> not unique
+    }
+    for (int i = 0; i + SEED_2 <= n; ++i) {
+        auto r = seed12_.emplace(encodeKmer(s + i, SEED_2), i + loadedStart_);
+        if (!r.second) r.first->second = 0;
+    }
 }
 
 } // namespace vardict

@@ -2,6 +2,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cstdint>
 #include <htslib/faidx.h>
 
 namespace vardict {
@@ -34,12 +35,29 @@ public:
     int loadedStart() const { return loadedStart_; }
     int loadedEnd() const { return loadedStart_ + (int)seq_.size() - 1; }
 
-    // k-mer -> reference positions (SEED_1=17 and SEED_2=12), built over the loaded window.
-    // Mirrors ReferenceResource.addPositionsToSeedSequence; used by findMatch for SV breakpoints.
-    const std::vector<int>* seedPositions(const std::string& kmer) const {
+    // Position where `kmer` (length SEED_1=17 or SEED_2=12) occurs UNIQUELY in the loaded window:
+    // returns that 1-based position (>0) if the k-mer appears exactly once, 0 if it appears more than
+    // once, and -1 if it is absent. Every consumer (findMatch / CigarModifier chimeric-clip) only ever
+    // tested `positions.size() == 1` and read positions[0], so this preserves behaviour exactly while
+    // storing an encoded-key -> unique-position map instead of a std::string key + std::vector<int> per
+    // k-mer occurrence. On a large sparsely-covered -R region (e.g. a whole chromosome) the old index
+    // built a heap string for every one of ~150M positions (~20 GB); this is ~4x leaner and byte-identical.
+    int seedUnique(const std::string& kmer) const {
         if (!seedBuilt_) buildSeed();
-        auto it = seed_.find(kmer);
-        return it == seed_.end() ? nullptr : &it->second;
+        const auto& m = ((int)kmer.size() == SEED_1) ? seed17_ : seed12_;
+        auto it = m.find(encodeKmer(kmer.data(), (int)kmer.size()));
+        return it == m.end() ? -1 : it->second;
+    }
+    // 3 bits/base (A,C,G,T -> 0..3, anything else incl. N -> 4); k <= 21 fits in 63 bits. SEED_1 and
+    // SEED_2 are kept in separate maps, so their encodings never collide.
+    static uint64_t encodeKmer(const char* s, int k) {
+        uint64_t c = 0;
+        for (int j = 0; j < k; ++j) {
+            char ch = s[j];
+            unsigned v = ch=='A'?0u : ch=='C'?1u : ch=='G'?2u : ch=='T'?3u : 4u;
+            c = (c << 3) | v;
+        }
+        return c;
     }
     static constexpr int SEED_1 = 17;
     static constexpr int SEED_2 = 12;
@@ -50,11 +68,10 @@ private:
     std::string seq_;
     std::string loadedChr_;
     int loadedStart_ = 1;
-    // Seed index is built lazily on first seedPositions() query and invalidated whenever the loaded
-    // window changes. Most regions never hit the SV/large-indel realignment paths that consume it, so
-    // eager construction (a heap std::string per k-mer position) was pure per-region overhead.
+    // Seed index is built lazily on first seedUnique() query and invalidated whenever the loaded window
+    // changes. Most regions never hit the SV/large-indel realignment paths that consume it.
     mutable bool seedBuilt_ = false;
-    mutable std::unordered_map<std::string, std::vector<int>> seed_;
+    mutable std::unordered_map<uint64_t, int> seed17_, seed12_;  // encoded k-mer -> unique pos (>0) or 0 if repeated
 };
 
 } // namespace vardict

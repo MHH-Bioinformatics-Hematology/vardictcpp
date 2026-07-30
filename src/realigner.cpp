@@ -208,9 +208,8 @@ static Match findMatch(std::string seq, Reference& ref, int /*position*/, int di
     std::string extra;
     for (int i = (int)seq.size() - SEED; i >= 0; --i) {
         std::string kmer = substr(seq, i, SEED);
-        const std::vector<int>* seeds = ref.seedPositions(kmer);
-        if (!seeds || seeds->size() != 1) continue;
-        int firstSeed = (*seeds)[0];
+        int firstSeed = ref.seedUnique(kmer);
+        if (firstSeed <= 0) continue;
         int bp = dir == 1 ? firstSeed - i : firstSeed + (int)seq.size() - i - 1;
         if (ismatchref(seq, ref, bp, dir, MM)) {
             int mm = dir == -1 ? -1 : 0;
@@ -256,9 +255,8 @@ static Match findMatchRev(std::string seq, Reference& ref, int /*position*/, int
     std::string extra;
     for (int i = (int)seq.size() - SEED; i >= 0; --i) {
         std::string kmer = substr(seq, i, SEED);
-        const std::vector<int>* seeds = ref.seedPositions(kmer);
-        if (!seeds || seeds->size() != 1) continue;
-        int firstSeed = (*seeds)[0];
+        int firstSeed = ref.seedUnique(kmer);
+        if (firstSeed <= 0) continue;
         int bp = dir == 1 ? firstSeed + (int)seq.size() - i - 1 : firstSeed - i;
         if (ismatchref(seq, ref, bp, -dir, MM)) {
             return { bp, extra };

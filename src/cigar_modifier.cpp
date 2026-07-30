@@ -308,15 +308,15 @@ void modifyCigar(int& position, Cig& cig, std::string& seq, std::vector<int>& qu
     if (!cfg.chimeric) {
         if (cig.front().second == 'S' && cig.front().first >= Reference::SEED_2) {
             int el = cig.front().first;
-            const auto* pos = ref.seedPositions(reverseComplement(seq.substr(0, el)).substr(0, Reference::SEED_2));
-            if (pos && pos->size() == 1 && std::abs(position - (*pos)[0]) < 2 * maxReadLength) {
+            int sp = ref.seedUnique(reverseComplement(seq.substr(0, el)).substr(0, Reference::SEED_2));
+            if (sp > 0 && std::abs(position - sp) < 2 * maxReadLength) {
                 cig.erase(cig.begin()); seq = seq.substr(el); qual.erase(qual.begin(), qual.begin() + el);
             }
         } else if (cig.back().second == 'S' && cig.back().first >= Reference::SEED_2) {
             int el = cig.back().first;
             std::string rc = reverseComplement(seq.substr(seq.size() - el, el));
-            const auto* pos = ref.seedPositions(rc.substr(rc.size() - Reference::SEED_2, Reference::SEED_2));
-            if (pos && pos->size() == 1 && std::abs(position - (*pos)[0]) < 2 * maxReadLength) {
+            int sp = ref.seedUnique(rc.substr(rc.size() - Reference::SEED_2, Reference::SEED_2));
+            if (sp > 0 && std::abs(position - sp) < 2 * maxReadLength) {
                 cig.pop_back(); seq = seq.substr(0, seq.size() - el); qual.resize(qual.size() - el);
             }
         }
