@@ -588,7 +588,15 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         // Insertions anchored at this position.
         auto insIt = vd.insertionVariants.find(position);
         if (insIt != vd.insertionVariants.end()) {
-            for (const auto& [allele, v] : insIt->second) {
+            // ToVarsBuilder.createInsertion mutates a running hicov across the sorted insertion
+            // loop: `if (hicov < hicnt) hicov = hicnt;`. Seeded with the position's calcHicov value,
+            // it is a monotonic max over the insertion hi-qual counts, so an insertion whose hi-qual
+            // read count exceeds the non-insertion hi-qual coverage gets hicov = hicnt (HiAF = 1.0).
+            int insHicov = hicov;
+            for (const auto& [allele, v] : insIt->second) {   // std::map sorted == Java Collections.sort
+                // createInsertion bumps hicov for EVERY insertion (no minReads skip there); the
+                // minReads/isGoodVar drop happens later, so the running max must see all insertions.
+                if (insHicov < v.highQualityReadsCount) insHicov = v.highQualityReadsCount;
                 if (v.varsCount < cfg.minReads) continue;
                 double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
                 // Per-variant -f filter removed: the position-level maxfreq gate above already
@@ -606,7 +614,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.nm    = v.varsCount ? v.numberOfMismatches / v.varsCount : 0;
                 var.pstd  = v.pstd ? 1 : 0;
                 var.qstd  = v.qstd ? 1 : 0;
-                var.hicnt = v.highQualityReadsCount; var.hicov = hicov;
+                var.hicnt = v.highQualityReadsCount; var.hicov = insHicov;
                 // A complex insertion ("+X&Y", "+...#...^...") carries a matched-sequence / indel tail
                 // from CigarParser's M+I bridging; decode it into the realized ref/var alleles and
                 // adjusted positions (ToVarsBuilder). Simple insertions keep the fast path + MSI.
@@ -640,7 +648,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                     for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
                     var.genotype = cleaned;
                 }
-                var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
+                var.hifreq = insHicov > 0 ? (double)v.highQualityReadsCount / insHicov : 0;
                 var.duprate = vd.duprate();
                 if (!complexIns) {   // MSI is skipped for complex insertions (proceedVrefIsInsertion not called)
                     std::string ins = allele.substr(1);
@@ -885,7 +893,10 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
 
         auto insIt = vd.insertionVariants.find(position);
         if (insIt != vd.insertionVariants.end()) {
-            for (const auto& [allele, v] : insIt->second) {
+            // Same running-hicov bump as callVariants / ToVarsBuilder.createInsertion.
+            int insHicov = hicov;
+            for (const auto& [allele, v] : insIt->second) {   // std::map sorted == Java Collections.sort
+                if (insHicov < v.highQualityReadsCount) insHicov = v.highQualityReadsCount;
                 if (v.varsCount < cfg.minReads) continue;
                 double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
                 Variant var;
@@ -900,7 +911,7 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 var.nm    = v.varsCount ? v.numberOfMismatches / v.varsCount : 0;
                 var.pstd  = v.pstd ? 1 : 0;
                 var.qstd  = v.qstd ? 1 : 0;
-                var.hicnt = v.highQualityReadsCount; var.hicov = hicov;
+                var.hicnt = v.highQualityReadsCount; var.hicov = insHicov;
                 // A complex insertion ("+X&Y", "+...#...^...") carries a matched-sequence / indel tail
                 // from CigarParser's M+I bridging; decode it into the realized ref/var alleles and
                 // adjusted positions (ToVarsBuilder). Simple insertions keep the fast path + MSI.
@@ -934,7 +945,7 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                     for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
                     var.genotype = cleaned;
                 }
-                var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
+                var.hifreq = insHicov > 0 ? (double)v.highQualityReadsCount / insHicov : 0;
                 var.duprate = vd.duprate();
                 if (!complexIns) {   // MSI is skipped for complex insertions (proceedVrefIsInsertion not called)
                     std::string ins = allele.substr(1);
