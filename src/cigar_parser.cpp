@@ -576,6 +576,42 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     // high/low-quality read split by goodq threshold (Java: tmpq >= goodq)
                     if (tmpq >= cfg_.goodq) v.highQualityReadsCount++; else v.lowQualityReadsCount++;
                     v.numberOfMismatches += nm - nmoff;
+
+                    // Finding 3 (processInsertion subCnt): the anchor base (read[qpos-1], ref position p)
+                    // was counted as a reference observation by the preceding M run; this read actually
+                    // supports the insertion, so remove that contribution from the anchor ref allele when
+                    // the anchor base matches the reference. refCoverage is left intact.
+                    if (p > rlo && ref_.has(p) && bseq[qpos - 1] == ref_.at(p)) {
+                        auto pit = out.nonInsertionVariants.find(p);
+                        if (pit != out.nonInsertionVariants.end()) {
+                            auto vit = pit->second.find(std::string(1, bseq[qpos - 1]));
+                            if (vit != pit->second.end()) {
+                                Variation& tv = vit->second;
+                                double bq = bqual[qpos - 1];
+                                tv.varsCount--;
+                                tv.decDir(reverse);
+                                tv.meanPosition -= tp;
+                                tv.meanQuality -= bq;
+                                tv.meanMappingQuality -= mapq;
+                                tv.numberOfMismatches -= (nm - nmoff);
+                                if (bq >= cfg_.goodq) tv.highQualityReadsCount--; else tv.lowQualityReadsCount--;
+                            }
+                        }
+                    }
+                    // Finding 4: insertion at the read edge (2nd CIGAR op, first op a soft/hard clip) --
+                    // add one anchor reference observation + coverage so the insertion AF can't exceed 1.
+                    if (k == 1 && !cigv.empty() && (cigv[0].second == 'S' || cigv[0].second == 'H') && ref_.has(p)) {
+                        Variation& tt = out.nonInsertionVariants[p][std::string(1, ref_.at(p))];
+                        tt.incDir(reverse);
+                        tt.varsCount++;
+                        tt.pstd = v.pstd; tt.qstd = v.qstd;
+                        tt.meanPosition += tp;
+                        tt.meanQuality += tmpq;
+                        tt.meanMappingQuality += mapq;
+                        tt.pp = tp; tt.pq = tmpq;
+                        tt.numberOfMismatches += nm - nmoff;
+                        out.refCoverage[p]++;
+                    }
                 }
                 qpos += len + offset + multoffp; rpe += len + offset + multoffp; rpos += offset + multoffs;
                 carryOffset = offset;   // next M segment starts past the folded bases
