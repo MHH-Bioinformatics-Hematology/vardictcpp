@@ -1159,7 +1159,39 @@ static BaseInsertion findbi(const std::string& seq, int position, Reference& ref
     return { bi, ins, bi2 };
 }
 
-void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int /*maxReadLength*/) {
+// StructuralVariantsProcessor.isOverlap: shared by markSVDel/markDUPSV. (Definition relocated here so
+// the split-read DUP path in realignlgins can reuse it; markSVDel below still calls it.)
+static bool isOverlapSV(int s1, int e1, int s2, int e2, int rlen) {
+    if (s1 >= e2 || s2 >= e1) return false;
+    int p[4] = {s1, e1, s2, e2}; std::sort(p, p + 4);
+    int ins = p[2] - p[1];
+    if (e1 != s1 && e2 != s2 && ins / (double)(e1 - s1) > 0.75 && ins / (double)(e2 - s2) > 0.75) return true;
+    if ((p[1] - p[0]) + (p[3] - p[2]) < 3 * rlen) return true;
+    return false;
+}
+
+// StructuralVariantsProcessor.markDUPSV: mark same-orientation dup clusters overlapping [start,end]
+// used; returns {count of clusters marked (clusters), sum of their varsCount (pairs)}. Note the
+// start2/end2 convention differs from markSV (start/mend vs mstart/end swapped).
+static std::pair<int,int> markDUPSV(int start, int end,
+                                    std::initializer_list<std::vector<Sclip>*> lists, int rlen) {
+    int pairs = 0, cnt = 0;
+    for (auto* lst : lists) {
+        for (auto& sv_r : *lst) {
+            int s2, e2;
+            if (sv_r.start < sv_r.mstart) { s2 = sv_r.start; e2 = sv_r.mend; }
+            else                          { s2 = sv_r.mstart; e2 = sv_r.end; }
+            if (isOverlapSV(start, end, s2, e2, rlen)) {
+                sv_r.used = true;
+                cnt++;
+                pairs += sv_r.varsCount;
+            }
+        }
+    }
+    return {cnt, pairs};
+}
+
+void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
     auto& NIV = vd.nonInsertionVariants;
     const int EXT = Config::EXTENSION;
     auto collect = [&](std::map<int, Sclip>& clips) {
@@ -1194,16 +1226,20 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
                 ins = joinRefFor5Lgins(ref, p, bi, seq, EXTRA);
             }
             ins += EXTRA;
+            // markDUPSV(p, bi): mark same-orientation dup clusters overlapping [p, bi] and collect
+            // their pair support (VariationRealigner 1673). bi here is still the match position.
+            auto dupmark = markDUPSV(p, bi, {&vd.svfdup, &vd.svrdup}, maxReadLength);
             if (!vd.refCoverage.count(p - 1) || (vd.refCoverage.count(bi) && vd.refCoverage[p - 1] < vd.refCoverage[bi])) {
                 vd.refCoverage[p - 1] = vd.refCoverage.count(bi) ? vd.refCoverage[bi] : sc5v.varsCount;
             } else if (sc5v.varsCount > vd.refCoverage[p - 1]) vd.refCoverage[p - 1] += sc5v.varsCount;
             bi = p - 1;
             // VariationRealigner.getSV(nonInsertionVariants, bi): anchor a DUP SV marker at bi so
             // ToVarsBuilder (which iterates nonInsertionVariants) visits this position and emits the
-            // insertion. markDUPSV is gated -> pairs/clusters=0; splits accumulates the split count.
+            // insertion. splits accumulates the split count; pairs/clusters come from markDUPSV.
             NIV[bi];  // create the non-insertion anchor (empty allele map)
             SVInfo& sv = vd.svInfoAt[bi];
             sv.type = "DUP"; sv.splits += sc5v.varsCount;
+            sv.pairs += dupmark.second; sv.clusters += dupmark.first;
             madeSV = true;
         }
         Variation& iref = vd.insertionVariants[bi]["+" + ins];
@@ -1250,11 +1286,14 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
                 ins = joinRefFor3Lgins(ref, bi, p - 1, shift5, seq, EXTRA);
             }
             ins += EXTRA;
+            // markDUPSV(bi, p-1): same-orientation dup cluster pair support (VariationRealigner 1847).
+            auto dupmark = markDUPSV(bi, p - 1, {&vd.svfdup, &vd.svrdup}, maxReadLength);
             bi = bi - 1;
             // getSV anchor (see 5' branch): make ToVarsBuilder visit bi and emit the insertion.
             NIV[bi];
             SVInfo& sv = vd.svInfoAt[bi];
             sv.type = "DUP"; sv.splits += sc3v.varsCount;
+            sv.pairs += dupmark.second; sv.clusters += dupmark.first;
             if (!vd.refCoverage.count(bi) || (vd.refCoverage.count(p) && vd.refCoverage[bi] < vd.refCoverage[p])) {
                 vd.refCoverage[bi] = vd.refCoverage.count(p) ? vd.refCoverage[p] : sc3v.varsCount;
             } else if (sc3v.varsCount > vd.refCoverage[bi]) vd.refCoverage[bi] += sc3v.varsCount;
@@ -1347,15 +1386,6 @@ void filterSVList(std::vector<Sclip>& list, int maxReadLength) {
         for (auto& [p, cnt] : sv.soft) if (cnt > bestc) { bestc = cnt; bestp = p; }
         sv.softp = sv.soft.empty() ? 0 : bestp;
     }
-}
-
-bool isOverlapSV(int s1, int e1, int s2, int e2, int rlen) {
-    if (s1 >= e2 || s2 >= e1) return false;
-    int p[4] = {s1, e1, s2, e2}; std::sort(p, p + 4);
-    int ins = p[2] - p[1];
-    if (e1 != s1 && e2 != s2 && ins / (double)(e1 - s1) > 0.75 && ins / (double)(e2 - s2) > 0.75) return true;
-    if ((p[1] - p[0]) + (p[3] - p[2]) < 3 * rlen) return true;
-    return false;
 }
 
 // StructuralVariantsProcessor.markSV: mark reciprocal-orientation clusters overlapping [start,end] used.
