@@ -500,27 +500,22 @@ void adjustMNP(VariationData& vd, Reference& ref, const Config&, const Region&) 
 
 // ---- realignins ---------------------------------------------------------------------------------
 
-void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
-    struct Item { int position; std::string desc; int count; };
-    std::vector<Item> tmp;
-    for (auto& [pos, m] : vd.positionToInsertionCount) for (auto& [d, c] : m) tmp.push_back({pos, d, c});
-    std::sort(tmp.begin(), tmp.end(), [](const Item& a, const Item& b) {
-        if (a.count != b.count) return a.count > b.count;
-        if (a.position != b.position) return a.position < b.position;
-        return a.desc > b.desc;
-    });
-    auto& NIV = vd.nonInsertionVariants;
-    for (const auto& t : tmp) {
-        int position = t.position; const std::string& vn = t.desc; int insertionCount = t.count;
+// One insertion allele of VariationRealigner.realignins: attracts nearby mismatched SNVs and matching
+// soft clips into the "+SEQ" insertion. Extracted so realignlgins30 can re-run it on the single allele
+// it just created (Java calls realignins({bi:{ins:cnt}}) inline), which the whole-map realignins pass
+// -- run earlier in the pipeline -- never sees.
+static void realignOneIns(VariationData& vd, Reference& ref, const Config& cfg, int maxReadLength,
+                          int position, const std::string& vn, int insertionCount) {
+        auto& NIV = vd.nonInsertionVariants;
         auto isATGC = [](char c){ return c=='A'||c=='C'||c=='G'||c=='T'; };
         // Parse the insertion-description grammar (VariationRealigner.realignins): a complex insertion
         // "+SEQ", optionally with "&extra", "#compm", "<dupN>ins3" or a "^N"/"^ATGC" tail. The old port
         // only handled plain "+SEQ" and dropped any '&'/'#' insertion, so complex insertions never
         // consumed their soft clips (and later plain insertions wrongly did).
-        if (vn.empty() || vn[0] != '+') continue;
+        if (vn.empty() || vn[0] != '+') return;
         std::string insert;   // BEGIN_PLUS_ATGC: leading ATGC run after '+'
         for (size_t k = 1; k < vn.size() && isATGC(vn[k]); ++k) insert += vn[k];
-        if (insert.empty()) continue;
+        if (insert.empty()) return;
         int inslen = (int)insert.size();
         std::string ins3;     // DUP_NUM_ATGC: <dup(\d+)>([ATGC]+)$
         { size_t d = vn.find("<dup");
@@ -632,7 +627,19 @@ void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Regi
                 adjRefFactor(&vref, -(first3 - first5 - 1) / (double)maxReadLength);
             }
         }
-    }
+}
+
+void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+    (void)region;
+    struct Item { int position; std::string desc; int count; };
+    std::vector<Item> tmp;
+    for (auto& [pos, m] : vd.positionToInsertionCount) for (auto& [d, c] : m) tmp.push_back({pos, d, c});
+    std::sort(tmp.begin(), tmp.end(), [](const Item& a, const Item& b) {
+        if (a.count != b.count) return a.count > b.count;
+        if (a.position != b.position) return a.position < b.position;
+        return a.desc > b.desc;
+    });
+    for (const auto& t : tmp) realignOneIns(vd, ref, cfg, maxReadLength, t.position, t.desc, t.count);
     // Merge "+SEQ&extra" duplicates into "+SEQ" (ATGSs_AMP_ATGSs_END). Plain inserts skip this.
     for (int i = (int)tmp.size() - 1; i > 0; --i) {
         int p = tmp[i].position; const std::string& vn = tmp[i].desc;
@@ -1051,6 +1058,11 @@ void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const 
             if (isIns) {
                 Variation* mvref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
                 adjCnt(vref, sc3v, mvref); adjCnt(vref, sc5v);
+                // VariationRealigner.realignlgins30 re-runs realignins on the allele it just created
+                // (Java: realignins({bi:{ins:vref.varsCount}})); the whole-map realignins pass ran
+                // earlier in the pipeline and never sees this insertion. This attracts the neighbouring
+                // mismatched reads that make up the insertion's per-variant mean-mismatch (NM) count.
+                realignOneIns(vd, ref, cfg, maxReadLength, bi, key, vref.varsCount);
             } else if (isDel) {
                 adjCnt(vref, sc3v, ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr);
                 adjCnt(vref, sc5v);
