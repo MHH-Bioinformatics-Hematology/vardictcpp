@@ -128,9 +128,11 @@ Reading the numbers:
 
 vardictcpp accepts **VarDictJava 1.8.3's complete option set** (62 options) with the same
 commons-cli syntax, including single-dash multi-char options (`-th 8`, `-VS STRICT`, `-DP`, `-mfreq`).
-Options that drive the single-sample pipeline are acted on; the rest are parsed (VarDict-compatible)
-even where not yet wired. Unsupported *modes* refuse cleanly instead of mis-calling: `-a/--amplicon`,
-`--fisher`, and somatic (two BAMs `-b 't|n'`).
+Options that drive the pipeline are acted on; the rest are parsed (VarDict-compatible) even where not
+yet wired. Amplicon (`-a`), `--fisher`, and the structural-variant paths are ported and enabled. The
+one partial mode is paired **somatic** (`-b 'tumor|normal'`): it parses and emits the 55-column layout
+but currently reads only the tumor BAM, so it does not yet compare against a distinct normal (see
+*Parity status*).
 
 ## Testing
 
@@ -228,25 +230,29 @@ decimals. Performance vs VarDictJava: **peak RSS 39× lower on average / 91× at
 0.028 GB on a repeat-dense sample) and **wall-clock 13× faster on average / 16× on the slowest
 sample** (230 s → 14.4 s).
 
-**Not yet ported — `CigarModifier` (the precise cause of the remaining false-positives):**
+**`CigarModifier` is ported and enabled.** It runs on every read at the top of `parseCigar` (gated on
+`-k`, VarDict's default), reshaping CIGARs before counting: leading/trailing D/I normalization,
+chimeric-seed clip removal, `captureMisSoftlyMS`/`captureMisSoftly3Mismatches`,
+`combineDigSDigM`/`combineBeginDigM`, and the indel-collapse loop. On the curated goldens this makes
+output byte-identical (0 FP / 0 FN). On noisy real WES a small residual of the hardest CIGAR-rewrite and
+distributed-coverage edge cases remains — a handful of FP/FN per sample (e.g. 5 FP / 10 FN out of ~16k;
+see [bench/equivalence_sra_wes.md](bench/equivalence_sra_wes.md)).
 
-Diagnosed to ground truth: the remaining panel FPs are reads whose CIGAR VarDict **rewrites before
-counting** and this port does not. E.g. at `chr3:47538004` the reads are `64S36M112S` (a 36 bp mapped
-island, mate unmapped) in a **poly-T homopolymer**; the 36 M has a single G>C. `modules/CigarModifier`
-(787 lines: leading/trailing D/I normalization, chimeric-seed clip removal, `captureMisSoftlyMS`/
-`captureMisSoftly3Mismatches`, `combineDigSDigM`/`combineBeginDigM`, and the indel-collapse loop)
-reshapes such reads so they never produce the SNV. VarDict pileup counts **nothing** there; this port
-counts `G>C 29/29`. `CigarModifier` runs on *every* read at the top of `parseCigar`, so it must be
-ported carefully (a defect changes all counting, not just these rows) — it is deliberately left for a
-dedicated pass rather than risking the verified pipeline.
+**Ported & enabled:** CIGAR parse (+ `CigarModifier`) → MNV/MNP → soft-clip → full small + large indel
+realignment → structural variants (split-read `<INV>` via `findsv`, discordant-pair `<DEL>` via
+`findDELdisc`, `filterSVStructures` clustering) → call/format, in **simple**, **amplicon** (`-a`), and
+**`--fisher`** modes.
 
-Also remaining: the **discordant/chimeric SV subsystem** (`StructuralVariantsProcessor` +
-`SVStructures` clustering) for SV *output*; faithful **distributed coverage** at indel/MNP-dense
-positions (the `TCC>ACG` Depth 46 vs 35); **somatic** (paired) and **amplicon** modes; `--fisher`.
+**Genuinely remaining:**
 
-Ported & enabled: CIGAR parse → MNV/MNP → soft-clip → **full small + large indel realignment** →
-call/format. Remaining: the discordant/chimeric SV subsystem, distributed coverage, somatic/amplicon,
-fisher.
+- **True two-BAM somatic.** `-b 'tumor|normal'` parses and emits the 55-column somatic layout, but only
+  the tumor BAM is read — the normal reuses the tumor counts (`appendSomaticRegion`/`determinateType`
+  treat `v1 == v2`), so StrongSomatic / LikelySomatic / LOH against a *distinct* normal is not real
+  yet. Completing it means running the pipeline on the second BAM and porting the two-sample
+  `SomaticPostProcessModule` comparison, verified against a Java somatic golden.
+- **Splicing** mode.
+- The last handful of WES edge-case FP/FN noted above (hardest CIGAR-rewrite / distributed-coverage
+  positions, e.g. the `TCC>ACG` Depth 46 vs 35 distributed-indel coverage).
 
 ## Input validation and error messages
 
