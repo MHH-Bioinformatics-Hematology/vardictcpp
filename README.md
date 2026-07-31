@@ -171,6 +171,39 @@ Ported & enabled: CIGAR parse → MNV/MNP → soft-clip → **full small + large
 call/format. Remaining: the discordant/chimeric SV subsystem, distributed coverage, somatic/amplicon,
 fisher.
 
+## Input validation and error messages
+
+vardictcpp fails fast with a clear, single-line `vardictcpp: <what>` message (and a non-zero exit)
+instead of crashing or silently producing no output. It reports: a malformed `-R` region (a bare
+chromosome or non-numeric bounds, with the expected `chr:start-end` form), BED problems with the line
+number and reason (too few columns for `-c/-S/-E/-g`, non-integer coordinates, `start > end`), a
+non-numeric value for any numeric option (naming the option), missing `-G`/`-b`/`-N`, and a missing or
+unindexed reference/BAM. As a preflight it also checks every requested chromosome against the
+reference and BAM, warning (or erroring, if none match) on naming mismatches such as `chr7` vs `7`.
+
+## Acknowledgments
+
+vardictcpp is a port of **VarDict** and **VarDictJava** by the AstraZeneca-NGS team. The algorithms,
+option set and output format are theirs; please cite the original VarDict paper when you use this
+software:
+
+> Lai Z, Markovets A, Ahdesmaki M, et al. *VarDict: a novel and versatile variant caller for
+> next-generation sequencing in cancer research.* Nucleic Acids Research (2016) 44(11):e108.
+> doi:10.1093/nar/gkw227
+
+Upstream projects:
+- VarDictJava: https://github.com/AstraZeneca-NGS/VarDictJava
+- VarDict (Perl): https://github.com/AstraZeneca-NGS/VarDict
+
 ## License
 
-Mirrors the upstream VarDict license (MIT). This is an independent reimplementation for research use.
+vardictcpp is released under the **MIT License**, the same license as VarDictJava. Because this is a
+port whose design and output are derived from VarDictJava, the original AstraZeneca-NGS copyright and
+permission notice is retained alongside the port's, as the MIT License requires. See the
+[LICENSE](LICENSE) file for the full text.
+
+- Copyright (c) 2019 AstraZeneca - NGS Team (original VarDict / VarDictJava)
+- Copyright (c) 2026 Joachim Wolff and the vardictcpp contributors
+
+Third-party components: this project links **htslib** (MIT/Expat) for BAM/CRAM and FASTA access; no
+VarDictJava source or its bundled libraries (JRegex, Commons CLI, Commons Math, htsjdk) are included.
