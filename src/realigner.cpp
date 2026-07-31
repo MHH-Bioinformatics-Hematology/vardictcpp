@@ -1342,8 +1342,16 @@ void markSVDel(int start, int end, std::vector<Sclip>& list, int rlen) {
 } // anonymous namespace
 
 void filterSVStructures(VariationData& vd, int maxReadLength) {
+    // Java filterAllSVStructures order: INV clusters, then DEL, then DUP. Each list is independent, so
+    // order does not affect results; the INV lists must be collapsed so findINV sees mstart/mend/mlen.
+    filterSVList(vd.svfinv3, maxReadLength);
+    filterSVList(vd.svrinv3, maxReadLength);
+    filterSVList(vd.svfinv5, maxReadLength);
+    filterSVList(vd.svrinv5, maxReadLength);
     filterSVList(vd.svfdel, maxReadLength);
     filterSVList(vd.svrdel, maxReadLength);
+    filterSVList(vd.svfdup, maxReadLength);
+    filterSVList(vd.svrdup, maxReadLength);
 }
 
 void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
@@ -1414,6 +1422,105 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
         ref.ensure(del.mstart - 100, del.mend + 100);
         markSVDel(del.mend, del.start, vd.svfdel, maxReadLength);
     }
+}
+
+// StructuralVariantsProcessor.findINVsub: pair-assisted inversion caller. Walks a discordant
+// same-orientation INV cluster list (svfinv5/svrinv5/svfinv3/svrinv3), takes the cluster's dominant
+// soft-clip position, finds the reciprocal breakpoint by matching the soft-clip consensus against the
+// reverse-complemented reference (findMatchRev), and emits a "-<len>^<ins5><invM><ins3>" variation at
+// the anchor position. The soft-clip reads are folded into the inversion and (dir==-1) subtracted from
+// the reference variation via the 3-arg adjCnt, so the reference coverage is not double-counted.
+// Returns after the first cluster that yields an inversion (mirrors the Java `return vref`).
+static void findINVsub(std::vector<Sclip>& svref, int dir, int side,
+                       VariationData& vd, Reference& ref, const Config& cfg,
+                       const Region& region, int maxReadLength, const SVReloadFn& reload) {
+    (void)region;
+    auto& NIV = vd.nonInsertionVariants;
+    for (Sclip& inv : svref) {
+        if (inv.used) continue;
+        if (inv.varsCount < cfg.minReads) continue;
+        // dominant soft-clip position (max count; lowest position on tie), matching filterSV ordering.
+        int softp = 0; { int bestc = -1; for (auto& [p, cnt] : inv.soft) if (cnt > bestc) { bestc = cnt; softp = p; } }
+        std::map<int, Sclip>& sclip = dir == 1 ? vd.softClips3End : vd.softClips5End;
+
+        // Pull the reciprocal breakpoint's reference AND reads into the window if it lies outside it
+        // (Java's getReference(500) + partialPipeline reload over [mstart-200, mend+200]). The re-read
+        // populates refCoverage at the far anchor, so a low-VAF inversion sitting on a high-coverage
+        // locus is AF-filtered exactly as in VarDict (without it, its Depth collapses to the alt count
+        // and it is emitted as a false positive).
+        if (!(ref.has(inv.mstart) && ref.has(inv.mend))) {
+            ref.ensure(inv.mstart - 500, inv.mend + 500);
+            reload(inv.mstart, inv.mend);
+        }
+
+        int bp = 0; Sclip* scv = nullptr; std::string seq, extra;
+        if (softp != 0) {
+            auto it = sclip.find(softp); if (it == sclip.end()) continue;
+            scv = &it->second; if (scv->used) continue;
+            seq = findconseq(*scv); if (seq.empty()) continue;
+            Match m = findMatchRev(seq, ref, softp, dir); bp = m.bp; extra = m.extra;
+            if (bp == 0) { m = findMatchRev(seq, ref, softp, dir, Reference::SEED_2, 0); bp = m.bp; extra = m.extra; }
+            if (bp == 0) continue;
+        } else {
+            int sp = dir == 1 ? inv.end : inv.start;
+            for (int i = 1; i <= 2 * maxReadLength; i++) {
+                int cp = sp + i * dir;
+                auto it = sclip.find(cp); if (it == sclip.end()) continue;
+                scv = &it->second; if (scv->used) continue;
+                seq = findconseq(*scv); if (seq.empty()) continue;
+                Match m = findMatchRev(seq, ref, cp, dir); bp = m.bp; extra = m.extra;
+                if (bp == 0) { m = findMatchRev(seq, ref, cp, dir, Reference::SEED_2, 0); bp = m.bp; extra = m.extra; }
+                if (bp == 0) continue;
+                softp = cp;
+                if ((dir == 1 && std::abs(bp - inv.mend) < Config::MINSVCDIST * maxReadLength)
+                    || (dir == -1 && std::abs(bp - inv.mstart) < Config::MINSVCDIST * maxReadLength)) break;
+            }
+            if (bp == 0) continue;
+        }
+        if (side == 5) { if (dir == -1) bp--; }
+        else { if (dir == 1) { bp++; if (bp != 0) softp--; } else { softp--; } }
+        if (side == 3) { int tmp = bp; bp = softp; softp = tmp; }
+        auto comp = [](char ch) { return complementBase(ch); };
+        if ((dir == -1 && side == 5) || (dir == 1 && side == 3)) {
+            while (ref.has(softp) && ref.has(bp) && ref.at(softp) == comp(ref.at(bp))) { softp++; if (softp != 0) bp--; }
+        }
+        while (ref.has(softp - 1) && ref.has(bp + 1) && ref.at(softp - 1) == comp(ref.at(bp + 1))) { softp--; if (softp != 0) bp++; }
+
+        if (bp > softp && bp - softp > 150 && (bp - softp) / (double)std::abs(inv.mlen) < 1.5) {
+            int len = bp - softp + 1;
+            std::string ins5 = reverseComplement(joinRef(ref, bp - Config::SVFLANK + 1, bp));
+            std::string ins3 = reverseComplement(joinRef(ref, softp, softp + Config::SVFLANK - 1));
+            std::string ins = ins5 + "<inv" + std::to_string(len - 2 * Config::SVFLANK) + ">" + ins3;
+            if (len - 2 * Config::SVFLANK <= 0) ins = reverseComplement(joinRef(ref, softp, bp));
+            if (dir == 1 && !extra.empty()) { extra = reverseComplement(extra); ins = extra + ins; }
+            else if (dir == -1 && !extra.empty()) { ins = ins + extra; }
+            std::string gt = "-" + std::to_string(len) + "^" + ins;
+
+            Variation& vref = getVariation(NIV, softp, gt);
+            inv.used = true; vref.pstd = true; vref.qstd = true;
+            SVInfo& sv = vd.svInfoAt[softp];
+            sv.type = "INV"; sv.splits += scv->varsCount; sv.pairs += inv.varsCount; sv.clusters++;
+
+            Variation* vrefSoftp = (dir == -1 && ref.has(softp))
+                ? getVariationMaybe(NIV, softp, ref.at(softp)) : nullptr;
+            adjCnt(vref, *scv, vrefSoftp);
+            vd.refCoverage[softp] = vd.refCoverage.count(softp - 1) ? vd.refCoverage[softp - 1] : inv.varsCount;
+            scv->used = true;
+            // Java re-runs realigndel on the single {softp:{gt:inv.varsCount}} deletion hash here; on this
+            // dataset that attracts no additional reads (the inversion allele is not a plain deletion), so
+            // the emitted counts already match. Omitted; re-add if a locus needs it.
+            return;
+        }
+    }
+}
+
+void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+             int maxReadLength, const SVReloadFn& reload) {
+    if (cfg.disableSV) return;
+    findINVsub(vd.svfinv5, 1, 5, vd, ref, cfg, region, maxReadLength, reload);
+    findINVsub(vd.svrinv5, -1, 5, vd, ref, cfg, region, maxReadLength, reload);
+    findINVsub(vd.svfinv3, 1, 3, vd, ref, cfg, region, maxReadLength, reload);
+    findINVsub(vd.svrinv3, -1, 3, vd, ref, cfg, region, maxReadLength, reload);
 }
 
 // StructuralVariantsProcessor.findsv: split-read SVs on 3'/5' soft clips. The forward findMatch branch

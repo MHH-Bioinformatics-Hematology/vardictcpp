@@ -1,5 +1,6 @@
 #pragma once
 // Ports the parts of modules/VariationRealigner.java used by the simple pipeline.
+#include <functional>
 #include "cigar_parser.hpp"
 #include "reference.hpp"
 #include "config.hpp"
@@ -26,6 +27,14 @@ void adjSNV(VariationData& vd, Reference& ref);
 // breakpoint variations (StructuralVariantsProcessor.findDELdisc) and runs after realignment.
 void filterSVStructures(VariationData& vd, int maxReadLength);
 void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+
+// StructuralVariantsProcessor.findINV: pair-assisted <INV> caller over the discordant same-orientation
+// INV clusters. Runs after realignment, BEFORE findsv (so the split-read path skips folded soft clips).
+// `reload(mstart,mend)` re-parses reads over the far breakpoint [mstart-200,mend+200] into vd (coverage
+// only, no SV clusters), mirroring the partialPipeline reload that lets low-VAF inversions be AF-filtered.
+using SVReloadFn = std::function<void(int, int)>;
+void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+             int maxReadLength, const SVReloadFn& reload);
 // StructuralVariantsProcessor.findsv: split-read SVs from soft clips. Only the candidate-inversion
 // path is emitted here (<INV>); runs after realignment, before findDELdisc (findAllSVs order).
 void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);

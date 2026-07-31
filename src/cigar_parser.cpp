@@ -83,16 +83,19 @@ static void addSVMate(Sclip& sd, int start_s, int end_e, int mateStart_ms, int m
     }
 }
 
-// CigarParser.prepareSVStructuresForAnalysis, DELETION (svfdel/svrdel) path only. Records a
-// same-chromosome discordant read pair whose orientation + oversized insert signal a deletion into the
-// forward/reverse DEL cluster list, opening a new cluster when the read is > MINSVCDIST*maxReadLength
-// past the last one. DUP/INV/inter-chromosome classification is not ported (no golden), so only the DEL
-// disc-count bumps are applied; that can only lower a DEL cluster's disc, never change its membership.
-static void prepareSVDel(const bam1_t* b, const Cig& cigv, int start,
-                         const std::vector<int>& bqual, int lqseq, bool reverse,
-                         double nm, VariationData& out, const Config& cfg) {
+// CigarParser.prepareSVStructuresForAnalysis (same-chromosome branch). Classifies a discordant read
+// pair by orientation into a DEL / DUP / INV cluster and records its Mate, opening a new cluster when
+// the read is > MINSVCDIST*maxReadLength past the last one of that kind. The cross-orientation
+// adddisccnt() bumps are replicated exactly (Java 2056-2203) so every cluster's disc matches VarDict;
+// DEL feeds findDELdisc, INV feeds findINV. DUP clusters are built only for that disc bookkeeping.
+static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
+                                const std::vector<int>& bqual, int lqseq, bool reverse,
+                                double nm, VariationData& out, const Config& cfg) {
     const bam1_core_t& c = b->core;
     if (c.mtid != c.tid) return; // getMateReferenceName == "=" (same chr); inter-chr not ported
+    const int maxRL = out.maxReadLength;
+    const double CDIST = Config::MINSVCDIST * maxRL;
+    const int MIN_D = 75;
     int totalLen = 0, alnMND = 0;
     for (auto& e : cigv) {
         char op = e.second;
@@ -122,34 +125,95 @@ static void prepareSVDel(const bam1_t* b, const Cig& cigv, int start,
     if (uint8_t* mq = bam_aux_get(const_cast<bam1_t*>(b), "MQ")) {
         if ((int)bam_aux2i(mq) < 15) return;
     }
+    const double qAtBase = bqual[Config::MINMAPBASE];
+    const double Qmean = c.qual;
+    const double pmean = maxRL / 2.0;
+    auto openIfNeeded = [](std::vector<Sclip>& lst, int startv, int fend, double cdist) {
+        if (lst.empty() || startv - fend > cdist) { Sclip sc; sc.varsCount = 0; lst.push_back(sc); }
+    };
+
     if (readDirNum * mateDirNum == -1 && (mlen * readDirNum) > 0 && lqseq > Config::MINMAPBASE) {
+        // deletion candidate
         mlen = mateStart > start ? (long)mend - start : (long)end - mateStart;
         if (std::labs(mlen) > (long)cfg.INSSIZE + (long)cfg.INSSTDAMT * cfg.INSSTD) {
-            double qAtBase = bqual[Config::MINMAPBASE];
-            double Qmean = c.qual;
-            double pmean = out.maxReadLength / 2.0;
             if (readDirNum == 1) {
-                if (out.svfdel.empty() || start - out.svdelfend > Config::MINSVCDIST * out.maxReadLength)
-                    { Sclip sc; sc.varsCount = 0; out.svfdel.push_back(sc); }
+                openIfNeeded(out.svfdel, start, out.svdelfend, CDIST);
                 addSVMate(out.svfdel.back(), start, end, mateStart, mend, readDirNum, totalLen,
                           (int)mlen, soft3, pmean, qAtBase, Qmean, nm, cfg.goodq);
                 out.svdelfend = end;
             } else {
-                if (out.svrdel.empty() || start - out.svdelrend > Config::MINSVCDIST * out.maxReadLength)
-                    { Sclip sc; sc.varsCount = 0; out.svrdel.push_back(sc); }
+                openIfNeeded(out.svrdel, start, out.svdelrend, CDIST);
                 addSVMate(out.svrdel.back(), start, end, mateStart, mend, readDirNum, totalLen,
                           (int)mlen, soft5, pmean, qAtBase, Qmean, nm, cfg.goodq);
                 out.svdelrend = end;
             }
-            if (!out.svfdel.empty() && std::abs(start - out.svdelfend) <= Config::MINSVCDIST * out.maxReadLength)
-                out.svfdel.back().disc++;
-            if (!out.svrdel.empty() && std::abs(start - out.svdelrend) <= Config::MINSVCDIST * out.maxReadLength)
-                out.svrdel.back().disc++;
+            if (!out.svfdel.empty() && std::abs(start - out.svdelfend) <= CDIST) out.svfdel.back().disc++;
+            if (!out.svrdel.empty() && std::abs(start - out.svdelrend) <= CDIST) out.svrdel.back().disc++;
+            if (!out.svfdup.empty() && std::abs(start - out.svdupfend) <= MIN_D) out.svfdup.back().disc++;
+            if (!out.svrdup.empty() && std::abs(start - out.svduprend) <= MIN_D) out.svrdup.back().disc++;
+            if (!out.svfinv5.empty() && std::abs(start - out.svinvfend5) <= MIN_D) out.svfinv5.back().disc++;
+            if (!out.svrinv5.empty() && std::abs(start - out.svinvrend5) <= MIN_D) out.svrinv5.back().disc++;
+            if (!out.svfinv3.empty() && std::abs(start - out.svinvfend3) <= MIN_D) out.svfinv3.back().disc++;
+            if (!out.svrinv3.empty() && std::abs(start - out.svinvrend3) <= MIN_D) out.svrinv3.back().disc++;
+        }
+    } else if (readDirNum * mateDirNum == -1 && readDirNum * mlen < 0 && lqseq > Config::MINMAPBASE) {
+        // duplication candidate
+        if (readDirNum == 1) {
+            openIfNeeded(out.svfdup, start, out.svdupfend, CDIST);
+            addSVMate(out.svfdup.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                      (int)mlen, soft3, pmean, qAtBase, Qmean, nm, cfg.goodq);
+            out.svdupfend = end;
+        } else {
+            openIfNeeded(out.svrdup, start, out.svduprend, CDIST);
+            addSVMate(out.svrdup.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                      (int)mlen, soft5, pmean, qAtBase, Qmean, nm, cfg.goodq);
+            out.svduprend = end;
+        }
+        if (!out.svfdup.empty() && std::abs(start - out.svdupfend) <= CDIST) out.svfdup.back().disc++;
+        if (!out.svrdup.empty() && std::abs(start - out.svduprend) <= CDIST) out.svrdup.back().disc++;
+        if (!out.svfdel.empty() && std::abs(start - out.svdelfend) <= MIN_D) out.svfdel.back().disc++;
+        if (!out.svrdel.empty() && std::abs(start - out.svdelrend) <= MIN_D) out.svrdel.back().disc++;
+        if (!out.svfinv5.empty() && std::abs(start - out.svinvfend5) <= MIN_D) out.svfinv5.back().disc++;
+        if (!out.svrinv5.empty() && std::abs(start - out.svinvrend5) <= MIN_D) out.svrinv5.back().disc++;
+        if (!out.svfinv3.empty() && std::abs(start - out.svinvfend3) <= MIN_D) out.svfinv3.back().disc++;
+        if (!out.svrinv3.empty() && std::abs(start - out.svinvrend3) <= MIN_D) out.svrinv3.back().disc++;
+    } else if (readDirNum * mateDirNum == 1 && lqseq > Config::MINMAPBASE) {
+        // inversion candidate (read and mate same orientation)
+        if (readDirNum == 1 && mlen != 0) {
+            if (mlen < -3L * maxRL) {
+                openIfNeeded(out.svfinv3, start, out.svinvfend3, CDIST);
+                addSVMate(out.svfinv3.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                          (int)mlen, soft3, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                out.svinvfend3 = end; out.svfinv3.back().disc++;
+            } else if (mlen > 3L * maxRL) {
+                openIfNeeded(out.svfinv5, start, out.svinvfend5, CDIST);
+                addSVMate(out.svfinv5.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                          (int)mlen, soft3, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                out.svinvfend5 = end; out.svfinv5.back().disc++;
+            }
+        } else if (mlen != 0) {
+            if (mlen < -3L * maxRL) {
+                openIfNeeded(out.svrinv3, start, out.svinvrend3, CDIST);
+                addSVMate(out.svrinv3.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                          (int)mlen, soft5, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                out.svinvrend3 = end; out.svrinv3.back().disc++;
+            } else if (mlen > 3L * maxRL) {
+                openIfNeeded(out.svrinv5, start, out.svinvrend5, CDIST);
+                addSVMate(out.svrinv5.back(), start, end, mateStart, mend, readDirNum, totalLen,
+                          (int)mlen, soft5, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                out.svinvrend5 = end; out.svrinv5.back().disc++;
+            }
+        }
+        if (mlen != 0) {
+            if (!out.svfdel.empty() && (start - out.svdelfend) <= MIN_D) out.svfdel.back().disc++;
+            if (!out.svrdel.empty() && (start - out.svdelrend) <= MIN_D) out.svrdel.back().disc++;
+            if (!out.svfdup.empty() && (start - out.svdupfend) <= MIN_D) out.svfdup.back().disc++;
+            if (!out.svrdup.empty() && (start - out.svduprend) <= MIN_D) out.svrdup.back().disc++;
         }
     }
 }
 
-bool CigarParser::process(const Region& region, VariationData& out) {
+bool CigarParser::process(const Region& region, VariationData& out, bool reloadMode) {
     // File/index/header are opened once per worker thread (BamReader) and reused across all regions.
     samFile*    fp  = bam_.fp();
     hts_idx_t*  idx = bam_.idx();
@@ -291,11 +355,14 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         // Structural-variant discordant-pair collection (CigarParser dispatch at 323-329): skip
         // paired reads whose mate is unmapped (potential insertion, not ported); otherwise, for
         // MAPQ>10 reads, record possible SV deletion clusters from the (post-modifyCigar) alignment.
-        if (!cfg_.disableSV) {
+        // In reloadMode (StructuralVariantsProcessor's partialPipeline) the reload's CigarParser is
+        // constructed with a throwaway SVStructures, so its SV-cluster bumps are discarded; we simply
+        // skip them here. Coverage/variations/soft-clips still accumulate into the shared `out`.
+        if (!cfg_.disableSV && !reloadMode) {
             bool paired = (c.flag & BAM_FPAIRED) != 0;
             bool mateUnmapped = (c.flag & BAM_FMUNMAP) != 0;
             if (paired && mateUnmapped) { /* potential insertion: not ported */ }
-            else if (c.qual > 10) prepareSVDel(b, cigv, rpos, bqual, c.l_qseq, reverse, nm, out, cfg_);
+            else if (c.qual > 10) prepareSVStructures(b, cigv, rpos, bqual, c.l_qseq, reverse, nm, out, cfg_);
         }
 
         int qpos = 0;           // 0-based query offset (includes soft-clip)

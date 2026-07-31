@@ -349,7 +349,12 @@ static int run(int argc, char** argv) {
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
         realignlgins(vd, ref, c, region, vd.maxReadLength);
         // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Ported paths,
-        // in Java order: findsv (split-read <INV>), then findDELdisc (discordant-pair <DEL>).
+        // in Java order: findINV (pair-assisted <INV>), findsv (split-read <INV>), findDELdisc (<DEL>).
+        auto reload = [&](int ms, int me) {
+            Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
+            CigarParser(c, ref, b).process(rr, vd, /*reloadMode=*/true);
+        };
+        if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload);
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);
@@ -371,6 +376,12 @@ static int run(int argc, char** argv) {
         realignlgdel(vd, ref, c, region, vd.maxReadLength);
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
         realignlgins(vd, ref, c, region, vd.maxReadLength);
+        auto reload = [&](int ms, int me) {
+            Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
+            CigarParser(c, ref, b1).process(rr, vd, /*reloadMode=*/true);
+            CigarParser(c, ref, b2).process(rr, vd, /*reloadMode=*/true);
+        };
+        if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload);
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);

@@ -59,11 +59,16 @@ struct VariationData {
     std::unordered_map<int, std::map<std::string,int>> positionToDeletionCount;  // pos -> "-N" -> count
     std::map<int, Sclip> softClips5End;         // 5' soft-clip consensus per position
     std::map<int, Sclip> softClips3End;         // 3' soft-clip consensus per position
-    // Structural-variant clusters (data/SVStructures.java): discordant read-pair deletion clusters,
-    // forward (svfdel) / reverse (svrdel), plus their rolling right edges. Only the DEL discordant
-    // path is collected/processed (findDELdisc); DUP/INV/fusion clusters are not built yet.
+    // Structural-variant clusters (data/SVStructures.java): discordant read-pair clusters by orientation
+    // and side, plus their rolling right edges. DEL clusters feed findDELdisc; INV clusters (svfinv5/
+    // svrinv5/svfinv3/svrinv3) feed findINV/findINVsub. DUP clusters are collected only for the exact
+    // cross-orientation disc bookkeeping (findDUPdisc is not ported; no DUP output on this dataset).
     std::vector<Sclip> svfdel, svrdel;
     int  svdelfend = 0, svdelrend = 0;
+    std::vector<Sclip> svfdup, svrdup;
+    int  svdupfend = 0, svduprend = 0;
+    std::vector<Sclip> svfinv5, svrinv5, svfinv3, svrinv3;
+    int  svinvfend5 = 0, svinvrend5 = 0, svinvfend3 = 0, svinvrend3 = 0;
     std::map<int, SVInfo> svInfoAt;             // position -> SV marker (pairs/splits/clusters)
     std::set<std::string> splice;               // intron junctions "start-end" from N CIGAR ops
     int  maxReadLength = 0;
@@ -82,8 +87,11 @@ class CigarParser {
 public:
     CigarParser(const Config& cfg, Reference& ref, BamReader& bam) : cfg_(cfg), ref_(ref), bam_(bam) {}
 
-    // Fills `out` for the given region. Returns false on I/O error.
-    bool process(const Region& region, VariationData& out);
+    // Fills `out` for the given region. Returns false on I/O error. When reloadMode is true, this is a
+    // StructuralVariantsProcessor partialPipeline reload: reads are re-parsed to accumulate coverage /
+    // variations / soft-clips at a far SV breakpoint into an existing `out`, and SV-cluster building is
+    // skipped (Java's reload uses a throwaway SVStructures).
+    bool process(const Region& region, VariationData& out, bool reloadMode = false);
 
 private:
     const Config& cfg_;
