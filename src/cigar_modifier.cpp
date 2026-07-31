@@ -30,6 +30,20 @@ static void captureMisSoftlyMS(int position, Cig& cig, const std::string& seq, c
             rn2++; if (ref.has(refoff + rn + rn2 + 1)) { char c = ref.at(refoff + rn + rn2 + 1); if (RN.find(c) == std::string::npos) RN += c; }
         }
         if (rn2 > 4 && (int)RN.size() > 1) { mch += rn2 + 1; soft -= rn2 + 1; }
+        // Java captureMisSoftlyMS `if (rn == 0)` block: when the forward scan found no match,
+        // walk backward from the M/S boundary and soft-clip back to the last mismatch found
+        // within a run of <3 consecutive matches (moves the soft-clip start earlier).
+        if (rn2 == 0) {
+            int rrn = 0, rmch = 0, rnb = 0;
+            while (rrn < mch && rnb < mch) {
+                if (!ref.has(refoff - rrn - 1)) break;
+                if (rrn < rdoff && refNeq(ref, refoff - rrn - 1, seq, rdoff - rrn - 1)) { rnb = rrn + 1; rmch = 0; }
+                else if (rrn < rdoff && refEq(ref, refoff - rrn - 1, seq, rdoff - rrn - 1)) rmch++;
+                rrn++;
+                if (rmch >= 3) break;
+            }
+            if (rnb > 0 && rnb < mch) { soft += rnb; mch -= rnb; }
+        }
     }
     cig[k - 2].first = mch;
     if (soft > 0) cig[k - 1].first = soft; else cig.pop_back();
