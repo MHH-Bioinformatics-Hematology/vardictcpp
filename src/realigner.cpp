@@ -838,6 +838,9 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             if (!(bp != 0 && p - bp > 15 && p - bp < Config::SVMAXLEN)) continue;
             bp++;
             if (cnt <= cfg.minReads) continue; // svcov==0 path (no discordant-pair support)
+            // SV split-read marker (VariationRealigner ~1042-1046). markSV (discordant-pair
+            // clusters) is not ported -> pairs=clusters=0; splits accumulates the clip count.
+            { SVInfo& sv = vd.svInfoAt[bp]; sv.type = "DEL"; sv.splits += cnt; }
         }
         int dellen = p - bp;
         std::string extra;
@@ -911,6 +914,9 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             bp = match.bp; EXTRA = match.extra;
             if (!(bp != 0 && bp - p > 15)) continue;
             if (cnt <= cfg.minReads) continue;
+            // SV split-read marker (VariationRealigner ~1254-1258). markSV not ported ->
+            // pairs=clusters=0; marker is keyed at p (the 3' clip position == variant bp).
+            { SVInfo& sv = vd.svInfoAt[p]; sv.type = "DEL"; sv.splits += cnt; }
         }
         int dellen = bp - p;
         std::string extra;
@@ -922,6 +928,12 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
         else if (!EXTRA.empty()) gt = "-" + std::to_string(dellen) + "&" + EXTRA;
         else {
             while (ref.has(bp - 1) && ref.has(bp + dellen - 1) && ref.at(bp - 1) == ref.at(bp + dellen - 1)) bp--;
+            // The 5' walk moved the breakpoint off p; carry the SV split marker with it
+            // (VariationRealigner ~1303-1310).
+            if (bp != p) {
+                auto svit = vd.svInfoAt.find(p);
+                if (svit != vd.svInfoAt.end()) { vd.svInfoAt[bp] = svit->second; vd.svInfoAt.erase(svit); }
+            }
         }
         Variation& tv = getVariation(NIV, bp, gt);
         tv.qstd = true; tv.pstd = true;
