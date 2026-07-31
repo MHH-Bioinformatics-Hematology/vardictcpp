@@ -174,10 +174,12 @@ static std::string combineAnalysis(const Config& cfg, const CombineFn& combine,
 // The 18-field per-sample block (Depth..NM). A null slot prints 18 zeros (matching a null Variant).
 static std::string block(const Variant* v) {
     if (!v) return "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0";
-    char buf[1024];
     std::string geno = v->genotype.empty() ? "0" : v->genotype;
     std::string bias = v->bias.empty() ? "0" : v->bias;
-    std::snprintf(buf, sizeof(buf),
+    // genotype of a large complex variant can be hundreds of bases; size the buffer to fit or the line
+    // is truncated (dropping columns and corrupting the row layout).
+    std::vector<char> buf(256 + geno.size() + bias.size());
+    std::snprintf(buf.data(), buf.size(),
         "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s",
         v->totalPosCoverage, v->varsCount, v->refFwd, v->refRev, v->varFwd, v->varRev,
         geno.c_str(), fmt(v->frequency, "%.4f").c_str(), bias.c_str(),
@@ -185,7 +187,7 @@ static std::string block(const Variant* v) {
         fmt(v->mapq, "%.1f").c_str(), fmt(v->qratio, "%.3f").c_str(),
         fmt(v->hifreq, "%.4f").c_str(), fmt(v->extrafreq, "%.4f").c_str(),
         v->nm > 0 ? fmt(v->nm, "%.1f").c_str() : "0");
-    return buf;
+    return buf.data();
 }
 
 // SomaticOutputVariant: begin -> pos/ref/alt/vartype, end -> shift3/msi/flanks, tumor -> var1 block,
@@ -196,23 +198,26 @@ static void printSomatic(std::string& out, const std::string& sample, const Regi
     if (!begin) return;
     std::string leftS  = (end && !end->leftseq.empty())  ? end->leftseq  : "0";
     std::string rightS = (end && !end->rightseq.empty()) ? end->rightseq : "0";
-    char head[512];
-    std::snprintf(head, sizeof(head), "%s\t%s\t%s\t%d\t%d\t%s\t%s\t",
+    // refallele/varallele of a large complex/insertion variant can be hundreds of bases.
+    std::vector<char> head(256 + sample.size() + region.gene.size() + region.chr.size()
+                           + begin->refallele.size() + begin->varallele.size());
+    std::snprintf(head.data(), head.size(), "%s\t%s\t%s\t%d\t%d\t%s\t%s\t",
         sample.c_str(), region.gene.c_str(), region.chr.c_str(),
         begin->startPosition, begin->endPosition, begin->refallele.c_str(), begin->varallele.c_str());
-    char tail[512];
-    std::snprintf(tail, sizeof(tail), "\t%d\t%s\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+    std::vector<char> tail(256 + leftS.size() + rightS.size() + label.size()
+                           + begin->vartype.size() + region.chr.size() + sv1.size() + sv2.size());
+    std::snprintf(tail.data(), tail.size(), "\t%d\t%s\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
         end ? end->shift3 : 0, end ? fmt(end->msi, "%.3f").c_str() : "0", end ? end->msint : 0,
         leftS.c_str(), rightS.c_str(),
         region.chr.c_str(), region.start, region.end,
         label.c_str(), begin->vartype.c_str(),
         tumor ? fmt(tumor->duprate, "%.1f").c_str() : "0", sv1.empty() ? "0" : sv1.c_str(),
         normal ? fmt(normal->duprate, "%.1f").c_str() : "0", sv2.empty() ? "0" : sv2.c_str());
-    out += head;
+    out += head.data();
     out += block(tumor);
     out += "\t";
     out += block(normal);
-    out += tail;
+    out += tail.data();
 }
 
 // Lookups mirroring getVarMaybe(vars, varn, nt) and getVarMaybe(vars, var, 0).

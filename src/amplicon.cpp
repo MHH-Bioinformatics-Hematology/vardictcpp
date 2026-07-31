@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace vardict {
 
@@ -169,8 +170,13 @@ static void appendAmpliconRow(std::string& out, const Config& cfg, const Region&
     const char* geno  = variant.genotype.empty() ? "0" : variant.genotype.c_str();
     const char* bias  = variant.bias.empty() ? "0" : variant.bias.c_str();
 
-    char buf[1024];
-    std::snprintf(buf, sizeof(buf),
+    // refallele/varallele/genotype/flanks of a large complex/insertion variant can be hundreds of bases;
+    // a fixed buffer would truncate the line, dropping columns and the newline (merging the next row).
+    std::vector<char> buf(512 + cfg.sample.size() + rg.gene.size() + rg.chr.size()
+                          + variant.refallele.size() + variant.varallele.size() + variant.genotype.size()
+                          + variant.leftseq.size() + variant.rightseq.size() + seg.size()
+                          + variant.vartype.size() + variant.bias.size());
+    std::snprintf(buf.data(), buf.size(),
         "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t"
         "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n",
         cfg.sample.c_str(),
@@ -209,7 +215,7 @@ static void appendAmpliconRow(std::string& out, const Config& cfg, const Region&
         totalVariantsCount,
         noCoverage,
         flag ? 1 : 0);
-    out += buf;
+    out += buf.data();
 }
 
 // Reference-only row (variant == null): AmpliconOutputVariant(null, rg, null, null, position, 0, nocov, false).
