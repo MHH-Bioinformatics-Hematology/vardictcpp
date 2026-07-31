@@ -287,6 +287,7 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         for (uint32_t k = 0; k < c.n_cigar; ++k) cigv.push_back({(int)bam_cigar_oplen(rawcig[k]), OPS[bam_cigar_op(rawcig[k])]});
         int rpos = c.pos + 1;   // 1-based reference position of current op
         if (cfg_.performLocalRealignment) modifyCigar(rpos, cigv, bseq, bqual, ref_, out.maxReadLength, cfg_);
+        const int readStart = rpos;  // CigarModifier-adjusted read alignment start (Java's `position`)
 
         // Structural-variant discordant-pair collection (CigarParser dispatch at 323-329): skip
         // paired reads whose mate is unmapped (potential insertion, not ported); otherwise, for
@@ -580,8 +581,11 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                     // Finding 3 (processInsertion subCnt): the anchor base (read[qpos-1], ref position p)
                     // was counted as a reference observation by the preceding M run; this read actually
                     // supports the insertion, so remove that contribution from the anchor ref allele when
-                    // the anchor base matches the reference. refCoverage is left intact.
-                    if (p > rlo && ref_.has(p) && bseq[qpos - 1] == ref_.at(p)) {
+                    // the anchor base matches the reference. refCoverage is left intact. The gate is the
+                    // read's own alignment start (Java processInsertion: `insertionPosition > position`),
+                    // NOT the region start -- otherwise an insertion at the first position of a region
+                    // wrongly keeps the anchor ref count (leaving a residual RefFwd/RefRev read).
+                    if (p > readStart && ref_.has(p) && bseq[qpos - 1] == ref_.at(p)) {
                         auto pit = out.nonInsertionVariants.find(p);
                         if (pit != out.nonInsertionVariants.end()) {
                             auto vit = pit->second.find(std::string(1, bseq[qpos - 1]));
