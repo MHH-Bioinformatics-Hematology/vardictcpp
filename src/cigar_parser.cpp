@@ -186,16 +186,6 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         if (c.n_cigar == 0 || c.l_qseq == 0) continue;
         // Ignore supplementary alignments (they would skew coverage), as VarDict does.
         if (c.flag & BAM_FSUPPLEMENTARY) continue;
-        // Ignore reads soft-clipped at both ends where the leading clip is 10-99 bp and the trailing
-        // clip is >= 10 bp (VarDict pattern ^\d\dS.*\d\dS$ on the CIGAR: two-digit leading S, >=2-digit
-        // trailing S). These are chimeric/mis-mapped islands VarDict does not count.
-        {
-            const uint32_t* cg0 = bam_get_cigar(b);
-            int lead = (bam_cigar_op(cg0[0]) == BAM_CSOFT_CLIP) ? (int)bam_cigar_oplen(cg0[0]) : 0;
-            int tail = (bam_cigar_op(cg0[c.n_cigar - 1]) == BAM_CSOFT_CLIP) ? (int)bam_cigar_oplen(cg0[c.n_cigar - 1]) : 0;
-            if (lead >= 10 && lead <= 99 && tail >= 10) continue;
-        }
-
         bool reverse = (c.flag & BAM_FREVERSE) != 0;
         int mapq = c.qual;
 
@@ -287,6 +277,15 @@ bool CigarParser::process(const Region& region, VariationData& out) {
         for (uint32_t k = 0; k < c.n_cigar; ++k) cigv.push_back({(int)bam_cigar_oplen(rawcig[k]), OPS[bam_cigar_op(rawcig[k])]});
         int rpos = c.pos + 1;   // 1-based reference position of current op
         if (cfg_.performLocalRealignment) modifyCigar(rpos, cigv, bseq, bqual, ref_, out.maxReadLength, cfg_);
+        // Ignore reads soft-clipped at both ends where the leading clip is 10-99 bp and the trailing
+        // clip is >= 10 bp (VarDict pattern ^\d\dS.*\d\dS$: two-digit leading S, >=2-digit trailing S).
+        // VarDict (CigarParser) applies this to the POST-modifyCigar CIGAR, so a read whose leading
+        // insertion/short-match is turned into a soft-clip by modifyCigar can newly qualify.
+        if (!cigv.empty()) {
+            int lead = (cigv.front().second == 'S') ? cigv.front().first : 0;
+            int tail = (cigv.back().second == 'S') ? cigv.back().first : 0;
+            if (lead >= 10 && lead <= 99 && tail >= 10) continue;
+        }
         const int readStart = rpos;  // CigarModifier-adjusted read alignment start (Java's `position`)
 
         // Structural-variant discordant-pair collection (CigarParser dispatch at 323-329): skip
