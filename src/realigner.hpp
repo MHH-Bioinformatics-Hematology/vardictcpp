@@ -17,8 +17,15 @@ void adjustMNP(VariationData& vd, Reference& ref, const Config& cfg, const Regio
 void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
-// Realign large deletions inferred from soft-clip consensus breakpoints (findbp path).
-void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+// `reload(mstart,mend)` re-parses reads over a far breakpoint [mstart-200,mend+200] into vd (coverage
+// only, no SV clusters), mirroring the partialPipeline reload that lets low-VAF SVs be AF-filtered.
+using SVReloadFn = std::function<void(int, int)>;
+
+// Realign large deletions inferred from soft-clip consensus breakpoints (findbp path). When the
+// realigned breakpoint lands outside the current region (bp < region.start for a 5' clip, bp >
+// region.end for a 3' clip), `reload` re-reads the coverage at the breakpoint so the deletion's
+// AF reflects the true (usually high) depth there and is filtered exactly as in VarDict.
+void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength, const SVReloadFn& reload);
 void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void adjSNV(VariationData& vd, Reference& ref);
 
@@ -30,9 +37,6 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
 
 // StructuralVariantsProcessor.findINV: pair-assisted <INV> caller over the discordant same-orientation
 // INV clusters. Runs after realignment, BEFORE findsv (so the split-read path skips folded soft clips).
-// `reload(mstart,mend)` re-parses reads over the far breakpoint [mstart-200,mend+200] into vd (coverage
-// only, no SV clusters), mirroring the partialPipeline reload that lets low-VAF inversions be AF-filtered.
-using SVReloadFn = std::function<void(int, int)>;
 void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
              int maxReadLength, const SVReloadFn& reload);
 // StructuralVariantsProcessor.findsv: split-read SVs from soft clips. Only the candidate-inversion

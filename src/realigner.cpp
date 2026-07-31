@@ -809,11 +809,12 @@ void adjSNV(VariationData& vd, Reference& ref) {
 }
 
 // ---- realignlgdel (large deletions from soft-clip breakpoints) -----------------------------------
-// Faithful port of the findbp path of VariationRealigner.realignlgdel. The bp==0 fallback (seed-based
-// findMatch + discordant-pair SV clusters + partialPipeline on extended regions) is gated off — those
-// require the SV subsystem not yet ported. SV output markers are likewise skipped (no SV column yet).
+// Faithful port of VariationRealigner.realignlgdel, including the bp==0 seed-based findMatch fallback
+// and its partialPipeline coverage reload (via `reload`) when the breakpoint lands outside the region.
+// The discordant-pair svcov/markSV bookkeeping is not ported (pairs=clusters=0; splits accumulates the
+// clip count); this only affects the SV_info split/pair columns, not the emitted deletion's AF filter.
 
-void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength, const SVReloadFn& reload) {
     auto& NIV = vd.nonInsertionVariants;
     const int EXT = Config::EXTENSION;
 
@@ -848,6 +849,14 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             // SV split-read marker (VariationRealigner ~1042-1046). markSV (discordant-pair
             // clusters) is not ported -> pairs=clusters=0; splits accumulates the clip count.
             { SVInfo& sv = vd.svInfoAt[bp]; sv.type = "DEL"; sv.splits += cnt; }
+            // partialPipeline reload (VariationRealigner 1048-1061): if the breakpoint lands before
+            // the region, re-read coverage at [bp-maxReadLength, min(bp+maxReadLength, region.start-1)]
+            // so refCoverage[bp] reflects the true depth and a low-VAF deletion is AF-filtered.
+            if (bp < region.start) {
+                int tts = bp - maxReadLength;
+                int tte = (bp + maxReadLength >= region.start) ? region.start - 1 : bp + maxReadLength;
+                reload(tts + 200, tte - 200);
+            }
         }
         int dellen = p - bp;
         std::string extra;
@@ -924,6 +933,13 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             // SV split-read marker (VariationRealigner ~1254-1258). markSV not ported ->
             // pairs=clusters=0; marker is keyed at p (the 3' clip position == variant bp).
             { SVInfo& sv = vd.svInfoAt[p]; sv.type = "DEL"; sv.splits += cnt; }
+            // partialPipeline reload (VariationRealigner 1260-1273): breakpoint past the region end ->
+            // re-read coverage at [max(bp-maxReadLength, region.end+1), bp+maxReadLength].
+            if (bp > region.end) {
+                int tts = (bp - maxReadLength <= region.end) ? region.end + 1 : bp - maxReadLength;
+                int tte = bp + maxReadLength;
+                reload(tts + 200, tte - 200);
+            }
         }
         int dellen = bp - p;
         std::string extra;

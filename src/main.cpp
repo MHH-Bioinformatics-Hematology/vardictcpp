@@ -250,9 +250,13 @@ static int run(int argc, char** argv) {
                 VariationData vd;
                 CigarParser(c, ref, bam).process(region, vd);
                 adjustMNP(vd, ref, c, region);
+                auto reload = [&](int ms, int me) {
+                    Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
+                    CigarParser(c, ref, bam).process(rr, vd, /*reloadMode=*/true);
+                };
                 realigndel(vd, ref, c, region, vd.maxReadLength);
                 realignins(vd, ref, c, region, vd.maxReadLength);
-                realignlgdel(vd, ref, c, region, vd.maxReadLength);
+                realignlgdel(vd, ref, c, region, vd.maxReadLength, reload);
                 realignlgins30(vd, ref, c, region, vd.maxReadLength);
                 realignlgins(vd, ref, c, region, vd.maxReadLength);
                 adjSNV(vd, ref);
@@ -343,17 +347,18 @@ static int run(int argc, char** argv) {
         // SV clusters) runs first, then adjustMNP, then realigndel, realignins, realignlgdel, ...
         if (!c.disableSV) filterSVStructures(vd, vd.maxReadLength);
         adjustMNP(vd, ref, c, region);
-        realigndel(vd, ref, c, region, vd.maxReadLength);
-        realignins(vd, ref, c, region, vd.maxReadLength);
-        realignlgdel(vd, ref, c, region, vd.maxReadLength);
-        realignlgins30(vd, ref, c, region, vd.maxReadLength);
-        realignlgins(vd, ref, c, region, vd.maxReadLength);
-        // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Ported paths,
-        // in Java order: findINV (pair-assisted <INV>), findsv (split-read <INV>), findDELdisc (<DEL>).
+        // reload(ms,me) re-reads coverage over [ms-200, me+200] into vd (reloadMode: no SV clusters).
         auto reload = [&](int ms, int me) {
             Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
             CigarParser(c, ref, b).process(rr, vd, /*reloadMode=*/true);
         };
+        realigndel(vd, ref, c, region, vd.maxReadLength);
+        realignins(vd, ref, c, region, vd.maxReadLength);
+        realignlgdel(vd, ref, c, region, vd.maxReadLength, reload);
+        realignlgins30(vd, ref, c, region, vd.maxReadLength);
+        realignlgins(vd, ref, c, region, vd.maxReadLength);
+        // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Ported paths,
+        // in Java order: findINV (pair-assisted <INV>), findsv (split-read <INV>), findDELdisc (<DEL>).
         if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload);
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
@@ -371,16 +376,16 @@ static int run(int argc, char** argv) {
         CigarParser(c, ref, b2).process(region, vd);
         if (!c.disableSV) filterSVStructures(vd, vd.maxReadLength);
         adjustMNP(vd, ref, c, region);
-        realigndel(vd, ref, c, region, vd.maxReadLength);
-        realignins(vd, ref, c, region, vd.maxReadLength);
-        realignlgdel(vd, ref, c, region, vd.maxReadLength);
-        realignlgins30(vd, ref, c, region, vd.maxReadLength);
-        realignlgins(vd, ref, c, region, vd.maxReadLength);
         auto reload = [&](int ms, int me) {
             Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
             CigarParser(c, ref, b1).process(rr, vd, /*reloadMode=*/true);
             CigarParser(c, ref, b2).process(rr, vd, /*reloadMode=*/true);
         };
+        realigndel(vd, ref, c, region, vd.maxReadLength);
+        realignins(vd, ref, c, region, vd.maxReadLength);
+        realignlgdel(vd, ref, c, region, vd.maxReadLength, reload);
+        realignlgins30(vd, ref, c, region, vd.maxReadLength);
+        realignlgins(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload);
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
