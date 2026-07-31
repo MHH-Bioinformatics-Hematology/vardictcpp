@@ -244,16 +244,14 @@ realignment → structural variants (split-read `<INV>` via `findsv`, discordant
 
 **Paired somatic** (`-b 'tumor|normal'`) runs the full pipeline on both BAMs and compares them
 (`SomaticMode` + `SomaticPostProcessModule`: `accept` / `callingForBothSamples` / `callingForOneSample`
-/ `determinateType`). On the test tumor|normal pair the somatic types all match (Germline / StrongLOH /
-StrongSomatic / Deletion / SampleSpecific) and **55 of 56 rows are byte-identical** to Java.
+/ `determinateType` / `combineAnalysis`). On the test tumor|normal pair all somatic types match
+(Germline / StrongLOH / StrongSomatic / Deletion / SampleSpecific) and **all 56 rows are byte-identical**
+to Java. `combineAnalysis` (the merged `bam1+bam2` re-run that keeps a low-coverage long indel from
+becoming a false somatic call) is ported and verified on a fixture that provably triggers it (byte-
+identical to Java, confirmed firing via VarDict's `-y` trace).
 
 **Genuinely remaining:**
 
-- **`combineAnalysis`** — the somatic refinement that re-runs a merged `bam1:bam2` window to keep a
-  low-coverage long *indel* from becoming a false somatic call. It only fires for non-SNV tumor-only
-  variants below `-r + 3` coverage, which the test pair does not contain, so it is currently a stub.
-- The one non-identical somatic row above: a complex-deletion allele representation at a 2-read
-  position (visible only in somatic's no-drop mode) — the same complex-indel residual class as WES.
 - The handful of WES edge-case FP/FN noted above (hardest CIGAR-rewrite / distributed-coverage
   positions, e.g. the `TCC>ACG` Depth 46 vs 35 distributed-indel coverage).
 
