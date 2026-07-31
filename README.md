@@ -63,9 +63,42 @@ Output is VarDict simple-mode TSV (same 36-column order as `SimpleOutputVariant`
 splits regions longer than `N` bp into consecutive windows, bounding peak memory independently of
 interval length (identical mechanism to the `--chunk` flag added to VarDictJava in this project).
 `--th N` (alias `--threads`) processes regions across `N` worker threads with ordered streaming
-output (mirrors VarDictJava's parallel mode); output is bit-identical to single-threaded. On the
-698-region hg19 panel at 8 threads: **0.52 s / 0.05 GB** vs VarDictJava **1.88 s / 1.47 GB**.
+output (mirrors VarDictJava's parallel mode); output is bit-identical to single-threaded.
 
+## Whole-exome benchmark
+
+Five public whole-exome SRA runs (hg19, bwa-mem, per-sample covered-target BED), `-f 0.01`, vs stock
+VarDictJava 1.8.3. Wall clock and peak RSS from the same harness; full numbers and method in
+[bench/results_wes_v1.md](bench/results_wes_v1.md).
+
+**Single core (`-th 1`)**
+
+| sample | regions | vardictcpp | VarDictJava 1.8.3 | faster | less RAM |
+|---|--:|--|--|--:|--:|
+| SRR15006540 | 135k | 56.8 s / 0.06 GB | 252.1 s / 32.5 GB | 4.4x | 532x |
+| SRR15006376 | 106k | 42.6 s / 0.07 GB | 189.0 s / 21.5 GB | 4.4x | 331x |
+| SRR8657348  | 774k | 93.5 s / 0.09 GB | 626.3 s / 32.7 GB | 6.7x | 371x |
+| SRR15006375 | 12k  | 50.7 s / 0.05 GB | 470.6 s /  5.5 GB | 9.3x | 106x |
+| SRR15006386 | 12k  | 48.7 s / 0.05 GB | 256.5 s /  6.5 GB | 5.3x | 120x |
+| **geomean** | | | | **5.8x** | **242x** |
+
+**8 threads (`-th 8`)**
+
+| sample | vardictcpp | VarDictJava 1.8.3 | faster | less RAM |
+|---|--|--|--:|--:|
+| SRR15006540 | 10.2 s / 0.30 GB | 138.8 s / 33.4 GB | 13.6x | 111x |
+| SRR15006376 |  8.1 s / 0.32 GB | 166.5 s / 33.6 GB | 20.6x | 105x |
+| SRR8657348  | 14.3 s / 0.24 GB | 267.4 s / 33.3 GB | 18.7x | 137x |
+| SRR15006375 |  8.2 s / 0.28 GB | 130.0 s / 12.8 GB | 15.9x |  46x |
+| SRR15006386 |  8.1 s / 0.21 GB | 109.6 s / 12.7 GB | 13.5x |  60x |
+| **geomean** | | | **16.2x** | **85x** |
+
+VarDictJava here is JDK 8 (its target JVM) with `-Xmx 100g`, so its peak RSS includes GC head-room; a
+modern JVM (G1) lowers it to ~3-11 GB single-core, still 40-180x above vardictcpp, and wall time is
+JVM-insensitive. On this noisy WES data the two callers agree on the variant set to within a handful of
+calls per sample (see [bench/equivalence_sra_wes.md](bench/equivalence_sra_wes.md)); on curated goldens
+output is byte-identical. For reference, on a small 698-region panel at 8 threads vardictcpp runs in
+**0.52 s / 0.05 GB** vs VarDictJava **1.88 s / 1.47 GB**.
 
 ## CLI compatibility
 
