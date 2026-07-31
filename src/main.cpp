@@ -12,6 +12,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <getopt.h>
+#include <stdexcept>
+#include <set>
 
 #include "config.hpp"
 #include "region.hpp"
@@ -39,28 +41,65 @@ static void usage() {
       "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n");
 }
 
+// Parse an integer option/field value, rejecting anything that is not a whole number so a typo turns
+// into a clear message instead of a silent 0 (std::atoi) or an uncaught std::invalid_argument crash.
+// `what` is woven into the error, e.g. "option -f" or "BED line 12 start".
+static long parseIntOr(const std::string& v, const std::string& what) {
+    try {
+        size_t pos = 0;
+        long r = std::stol(v, &pos);
+        if (pos != v.size()) throw std::invalid_argument(v);
+        return r;
+    } catch (const std::exception&) {
+        throw std::runtime_error(what + " expects an integer, got '" + v + "'");
+    }
+}
+
+static double parseDoubleOr(const std::string& v, const std::string& what) {
+    try {
+        size_t pos = 0;
+        double r = std::stod(v, &pos);
+        if (pos != v.size()) throw std::invalid_argument(v);
+        return r;
+    } catch (const std::exception&) {
+        throw std::runtime_error(what + " expects a number, got '" + v + "'");
+    }
+}
+
 static std::vector<Region> loadBed(const Config& c) {
     std::vector<Region> regs;
     std::ifstream in(c.bed);
-    if (!in) { std::fprintf(stderr, "cannot open BED %s\n", c.bed.c_str()); std::exit(1); }
+    if (!in) throw std::runtime_error("cannot open BED file '" + c.bed + "'");
+    const int need = std::max({c.colChr, c.colStart, c.colEnd, c.colGene});
     std::string line;
+    long lineno = 0;
     while (std::getline(in, line)) {
+        ++lineno;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
+        if (line.rfind("track", 0) == 0 || line.rfind("browser", 0) == 0) continue;
         std::vector<std::string> f;
         std::stringstream ss(line); std::string tok;
         while (std::getline(ss, tok, '\t')) f.push_back(tok);
-        int need = std::max({c.colChr, c.colStart, c.colEnd, c.colGene});
-        if ((int)f.size() < need) continue;
+        const std::string where = "BED '" + c.bed + "' line " + std::to_string(lineno);
+        if ((int)f.size() < need) {
+            throw std::runtime_error(where + ": found " + std::to_string(f.size()) +
+                " column(s) but -c/-S/-E/-g need at least " + std::to_string(need) +
+                " (the file must be tab-separated; supply a gene/name column or adjust -g)");
+        }
         Region r;
         r.chr = f[c.colChr - 1];
-        int s = std::stoi(f[c.colStart - 1]);
-        int e = std::stoi(f[c.colEnd - 1]);
+        if (r.chr.empty()) throw std::runtime_error(where + ": empty chromosome name in column " + std::to_string(c.colChr));
+        int s = (int)parseIntOr(f[c.colStart - 1], where + " start (column " + std::to_string(c.colStart) + ")");
+        int e = (int)parseIntOr(f[c.colEnd - 1], where + " end (column " + std::to_string(c.colEnd) + ")");
+        if (s > e) throw std::runtime_error(where + ": start " + std::to_string(s) + " is greater than end " + std::to_string(e));
         if (c.zeroBased && s < e) s += 1; // BED half-open -> 1-based
         r.start = s - c.numberNucleotideToExtend;
         r.end   = e + c.numberNucleotideToExtend;
         r.gene = (c.colGene - 1 < (int)f.size()) ? f[c.colGene - 1] : r.chr;
         regs.push_back(r);
     }
+    if (regs.empty()) throw std::runtime_error("no usable regions found in BED file '" + c.bed + "'");
     return regs;
 }
 
@@ -78,7 +117,7 @@ static const std::map<std::string, bool> VARDICT_OPTS = {
     {"h",0},{"i",0},{"k",0},{"p",0},{"t",0},{"u",0},{"v",0},{"y",0},{"z",0},{"?",0},
 };
 
-int main(int argc, char** argv) {
+static int run(int argc, char** argv) {
     Config c;
     std::map<std::string, std::string> opt;   // parsed options (name -> value; flags -> "")
     std::vector<std::string> positional;
@@ -105,6 +144,10 @@ int main(int argc, char** argv) {
     }
     auto has = [&](const char* k){ return opt.count(k) != 0; };
     auto val = [&](const char* k, const char* d){ auto it = opt.find(k); return it == opt.end() ? std::string(d) : it->second; };
+    // Validated numeric accessors: a bad user value (e.g. "-f abc") becomes a clear message naming the
+    // option instead of silently parsing to 0. Defaults are always well-formed, so they never throw.
+    auto ival = [&](const char* k, const char* d){ return (int)parseIntOr(val(k, d), std::string("option -") + k); };
+    auto dval = [&](const char* k, const char* d){ return parseDoubleOr(val(k, d), std::string("option -") + k); };
 
     // Amplicon (multiplex) mode: -a EDGE:FRACTION (GlobalReadOnlyScope.ampliconBasedCalling).
     if (has("a")) {
@@ -138,25 +181,25 @@ int main(int argc, char** argv) {
         }
     }
     c.region = val("R", "");
-    c.colChr = std::atoi(val("c", "1").c_str());
-    c.colStart = std::atoi(val("S", "2").c_str());
-    c.colEnd = std::atoi(val("E", "3").c_str());
-    c.colGene = std::atoi(val("g", "4").c_str());
-    c.freq = std::atof(val("f", "0.01").c_str());
-    c.minReads = std::atoi(val("r", "2").c_str());
-    c.minBiasReads = std::atoi(val("B", "2").c_str());
-    c.goodq = std::atof(val("q", "22.5").c_str());
-    c.mapqMin = std::atof(val("O", "0").c_str());
-    c.readPosFilter = std::atoi(val("P", "5").c_str());
-    c.qratio = std::atof(val("o", "1.5").c_str());
-    c.lofreq = std::atof(val("V", "0.05").c_str());
-    c.vext = std::atoi(val("X", "2").c_str());
-    c.mismatch = std::atoi(val("m", "8").c_str());
-    c.indelsize = std::atoi(val("I", "50").c_str());
-    c.SVMINLEN = std::atoi(val("L", "1000").c_str());
-    c.monomerMsiFrequency = std::atof(val("mfreq", "0.25").c_str());
-    c.nonMonomerMsiFrequency = std::atof(val("nmfreq", "0.1").c_str());
-    c.numberNucleotideToExtend = std::atoi(val("x", "0").c_str());
+    c.colChr = ival("c", "1");
+    c.colStart = ival("S", "2");
+    c.colEnd = ival("E", "3");
+    c.colGene = ival("g", "4");
+    c.freq = dval("f", "0.01");
+    c.minReads = ival("r", "2");
+    c.minBiasReads = ival("B", "2");
+    c.goodq = dval("q", "22.5");
+    c.mapqMin = dval("O", "0");
+    c.readPosFilter = ival("P", "5");
+    c.qratio = dval("o", "1.5");
+    c.lofreq = dval("V", "0.05");
+    c.vext = ival("X", "2");
+    c.mismatch = ival("m", "8");
+    c.indelsize = ival("I", "50");
+    c.SVMINLEN = ival("L", "1000");
+    c.monomerMsiFrequency = dval("mfreq", "0.25");
+    c.nonMonomerMsiFrequency = dval("nmfreq", "0.1");
+    c.numberNucleotideToExtend = ival("x", "0");
     if (has("F")) c.samFilterFlag = (int)std::strtol(opt["F"].c_str(), nullptr, 0);
     c.zeroBased = has("z");
     c.doPileup = has("p");
@@ -164,13 +207,17 @@ int main(int argc, char** argv) {
     c.printHeader = has("h");
     c.chimeric = has("chimeric");
     if (has("k")) c.performLocalRealignment = std::atoi(val("k", "1").c_str()) != 0;
-    c.chunkSize = std::atoi(val("chunk", "0").c_str());
-    c.threads = std::max(1, std::atoi(val(has("threads") ? "threads" : "th", "1").c_str()));
+    c.chunkSize = ival("chunk", "0");
+    c.threads = std::max(1, ival(has("threads") ? "threads" : "th", "1"));
     if (has("H") || has("?")) { usage(); return 0; }
 
     bool zeroBasedSet = has("z");
     if (!positional.empty()) c.bed = positional[0];
-    if (c.ref.empty() || c.bam.empty()) { usage(); return 1; }
+    if (c.ref.empty()) { std::fprintf(stderr, "vardictcpp: a reference FASTA is required (-G ref.fa)\n\n"); usage(); return 1; }
+    if (c.bam.empty()) { std::fprintf(stderr, "vardictcpp: an input BAM is required (-b in.bam)\n\n"); usage(); return 1; }
+    if (c.sample.empty()) { std::fprintf(stderr, "vardictcpp: a sample name is required (-N sample)\n\n"); usage(); return 1; }
+    if (!c.region.empty() && !c.bed.empty())
+        std::fprintf(stderr, "vardictcpp: warning: both a region (-R) and a BED were given; using -R and ignoring the BED\n");
 
     // Amplicon (multiplex) mode: process by segment, comparing calls across overlapping amplicons.
     if (c.amplicon) {
@@ -208,13 +255,25 @@ int main(int argc, char** argv) {
     // Build regions.
     std::vector<Region> regions;
     if (!c.region.empty()) {
-        Region r;
+        // Expect chr:start-end (commas allowed, e.g. chr7:55,019,017-55,211,628). A bare "chr7" or any
+        // other shape is a common mistake, so report it clearly instead of crashing in the parser.
         auto colon = c.region.find(':');
+        auto dash = (colon == std::string::npos) ? std::string::npos : c.region.find('-', colon + 1);
+        if (colon == std::string::npos || dash == std::string::npos || colon == 0)
+            throw std::runtime_error("invalid region '" + c.region +
+                "' for -R; expected chr:start-end, e.g. chr7:1-159138663");
+        Region r;
         r.chr = c.region.substr(0, colon);
-        std::string rest = c.region.substr(colon + 1);
-        auto dash = rest.find('-');
-        r.start = std::stoi(rest.substr(0, dash)) - c.numberNucleotideToExtend;
-        r.end   = std::stoi(rest.substr(dash + 1)) + c.numberNucleotideToExtend;
+        std::string ss = c.region.substr(colon + 1, dash - colon - 1);
+        std::string es = c.region.substr(dash + 1);
+        ss.erase(std::remove(ss.begin(), ss.end(), ','), ss.end());
+        es.erase(std::remove(es.begin(), es.end(), ','), es.end());
+        int s = (int)parseIntOr(ss, "region start in -R '" + c.region + "'");
+        int e = (int)parseIntOr(es, "region end in -R '" + c.region + "'");
+        if (s > e) throw std::runtime_error("region start " + std::to_string(s) +
+            " is greater than end " + std::to_string(e) + " in -R '" + c.region + "'");
+        r.start = s - c.numberNucleotideToExtend;
+        r.end   = e + c.numberNucleotideToExtend;
         r.gene = r.chr;
         regions.push_back(r);
     } else if (!c.bed.empty()) {
@@ -223,10 +282,37 @@ int main(int argc, char** argv) {
         (void)zeroBasedSet;
         regions = loadBed(c);
     } else {
-        std::fprintf(stderr, "error: need -R or a BED file\n");
+        std::fprintf(stderr, "vardictcpp: no target given; pass a region (-R chr:start-end) or a BED file\n\n");
+        usage();
         return 1;
     }
     regions = splitLongRegions(regions, c.chunkSize);
+
+    // Preflight: open the reference and BAM once (surfacing missing-file / missing-index errors up
+    // front with a clear message) and check that the requested chromosomes actually exist in both.
+    // Mismatched naming (e.g. "chr7" vs "7") is the usual reason a run silently produces no calls.
+    {
+        Reference refChk(c.ref);
+        BamReader bamChk(c.bam);
+        std::set<std::string> chrs;
+        for (const auto& r : regions) chrs.insert(r.chr);
+        size_t missingRef = 0;
+        for (const auto& chr : chrs) {
+            bool inRef = refChk.hasContig(chr);
+            bool inBam = bamChk.hasContig(chr);
+            if (!inRef) {
+                ++missingRef;
+                std::fprintf(stderr, "vardictcpp: warning: chromosome '%s' is not in the reference '%s'; it will be skipped\n",
+                             chr.c_str(), c.ref.c_str());
+            } else if (!inBam) {
+                std::fprintf(stderr, "vardictcpp: warning: chromosome '%s' is not in the BAM '%s'; no reads there\n",
+                             chr.c_str(), c.bam.c_str());
+            }
+        }
+        if (missingRef == chrs.size())
+            throw std::runtime_error("none of the requested chromosomes were found in the reference '" + c.ref +
+                "'; check that the chromosome naming matches (e.g. 'chr7' vs '7')");
+    }
 
     if (c.printHeader) { if (c.somatic) printSomaticHeader(stdout); else printHeader(stdout); }
 
@@ -318,4 +404,19 @@ int main(int argc, char** argv) {
     }
     for (auto& t : pool) t.join();
     return 0;
+}
+
+int main(int argc, char** argv) {
+    // Convert any error (bad option value, unreadable/unindexed BAM, missing reference, malformed BED
+    // or region, ...) into a single clear "vardictcpp: <what>" line and a non-zero exit, instead of an
+    // uncaught-exception "terminate called" abort that tells the user nothing.
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "vardictcpp: %s\n", e.what());
+        return 1;
+    } catch (...) {
+        std::fprintf(stderr, "vardictcpp: an unknown error occurred\n");
+        return 1;
+    }
 }

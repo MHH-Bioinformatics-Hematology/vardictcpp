@@ -32,6 +32,9 @@ public:
     }
     // Whether position p is within the loaded window (mirrors ref.get(p) != null).
     bool has(int p) const { int i = p - loadedStart_; return i >= 0 && i < (int)seq_.size(); }
+    // Whether the FASTA index contains a sequence named `name` (used to catch chromosome-naming
+    // mismatches such as "chr7" vs "7" before a run silently produces no calls).
+    bool hasContig(const std::string& name) const { return fai_ && faidx_has_seq(fai_, name.c_str()); }
     int loadedStart() const { return loadedStart_; }
     int loadedEnd() const { return loadedStart_ + (int)seq_.size() - 1; }
 

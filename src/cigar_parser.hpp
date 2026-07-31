@@ -36,6 +36,8 @@ public:
     samFile*    fp()  const { return fp_; }
     hts_idx_t*  idx() const { return idx_; }
     bam_hdr_t*  hdr() const { return hdr_; }
+    // Whether the BAM header knows a reference named `name` (catches chromosome-naming mismatches).
+    bool hasContig(const std::string& name) const { return bam_name2id(hdr_, name.c_str()) >= 0; }
 private:
     samFile*   fp_  = nullptr;
     hts_idx_t* idx_ = nullptr;
