@@ -14,6 +14,7 @@
 #include <getopt.h>
 #include <stdexcept>
 #include <set>
+#include <memory>
 
 #include "config.hpp"
 #include "region.hpp"
@@ -331,12 +332,13 @@ static int run(int argc, char** argv) {
     // Process one region into a fresh output buffer. Each call uses its own Reference/CigarParser so
     // it is safe to run concurrently (htslib faidx/BAM handles are not shared across threads). vd is
     // released at the end of the call, so per-region memory never accumulates.
-    auto processRegion = [&](const Region& region, Reference& ref, BamReader& bam) {
-        // VarDict loads reference with numberNucleotideToExtend + referenceExtension(1200) padding;
-        // realignment flanks + the seed index for findMatch need this wider window.
+    // Run the full counting + realignment pipeline for one BAM over a region and return its per-position
+    // variation data. VarDict loads reference with numberNucleotideToExtend + referenceExtension(1200)
+    // padding; realignment flanks + the seed index for findMatch need this wider window.
+    auto runPipeline = [&](Reference& ref, BamReader& b, const Region& region) {
         ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
         VariationData vd;
-        CigarParser(c, ref, bam).process(region, vd);
+        CigarParser(c, ref, b).process(region, vd);
         // Realignment order mirrors VariationRealigner: filterAllSVStructures (collapse discordant-pair
         // SV clusters) runs first, then adjustMNP, then realigndel, realignins, realignlgdel, ...
         if (!c.disableSV) filterSVStructures(vd, vd.maxReadLength);
@@ -351,14 +353,23 @@ static int run(int argc, char** argv) {
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);
+        return vd;
+    };
+
+    auto processRegion = [&](const Region& region, Reference& ref, BamReader& bam, BamReader* bam2) {
         std::string buf;
         if (c.somatic) {
-            // Paired analysis. The harness pairs a BAM with itself, so the tumor pipeline result is
-            // reused for the normal sample (identical counts); SomaticPostProcessModule then compares
-            // the two. Building once guarantees v1 == v2 exactly (no maxReadLength-seed drift).
-            auto positions = callVariantsSomatic(c, region, vd, ref);
-            appendSomaticRegion(buf, c, region, positions);
+            // SomaticMode: run the pipeline on the tumor (BAM1) and normal (BAM2) separately, then
+            // SomaticPostProcessModule compares the two per-position candidate sets. pos1 is built while
+            // the reference window is loaded for BAM1; BAM2's pipeline reloads the same window (identical
+            // ref bases), so pos1/pos2 both see consistent reference context.
+            VariationData vd1 = runPipeline(ref, bam, region);
+            auto pos1 = callVariantsSomatic(c, region, vd1, ref);
+            VariationData vd2 = runPipeline(ref, *bam2, region);
+            auto pos2 = callVariantsSomatic(c, region, vd2, ref);
+            appendSomaticRegion(buf, c, region, pos1, pos2);
         } else {
+            VariationData vd = runPipeline(ref, bam, region);
             auto variants = callVariants(c, region, vd, ref);
             for (const auto& v : variants) appendVariant(buf, c, region, v);
         }
@@ -370,7 +381,9 @@ static int run(int argc, char** argv) {
     if (nthreads == 1) {
         Reference ref(c.ref);
         BamReader bam(c.bam);
-        for (const auto& region : regions) std::fputs(processRegion(region, ref, bam).c_str(), stdout);
+        std::unique_ptr<BamReader> bam2;
+        if (c.somatic) bam2.reset(new BamReader(c.bam2));
+        for (const auto& region : regions) std::fputs(processRegion(region, ref, bam, bam2.get()).c_str(), stdout);
         return 0;
     }
 
@@ -387,9 +400,11 @@ static int run(int argc, char** argv) {
     auto worker = [&]() {
         Reference ref(c.ref); // per-thread faidx handle
         BamReader bam(c.bam); // per-thread BAM file/index/header handle
+        std::unique_ptr<BamReader> bam2;
+        if (c.somatic) bam2.reset(new BamReader(c.bam2));
         int i;
         while ((i = nextWork.fetch_add(1)) < nreg) {
-            std::string buf = processRegion(regions[i], ref, bam);
+            std::string buf = processRegion(regions[i], ref, bam, bam2.get());
             std::lock_guard<std::mutex> lk(m);
             results[i] = std::move(buf);
             done[i] = 1;

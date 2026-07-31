@@ -56,6 +56,11 @@ struct SomaticPosition {
     std::vector<Variant> variants;
     int refHicnt = 0;
     double refMeanMapq = 0;
+    // Reference-allele variant (mirrors Vars.referenceVariant) and the position SV string, both needed
+    // by the two-sample somatic comparison (LOH / StrongLOH varForPrint, strong-somatic fallback).
+    Variant referenceVariant;
+    bool hasRef = false;
+    std::string sv;
 };
 
 // Build called variants for a region from its VariationData (mirrors ToVarsBuilder + the

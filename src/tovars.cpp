@@ -751,6 +751,51 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
         sp.position = position;
         sp.refHicnt = refHicnt;
         sp.refMeanMapq = refMeanMapq;
+        if (isSVpos) sp.sv = std::to_string(svIt->second.splits) + "-" +
+                             std::to_string(svIt->second.pairs) + "-" +
+                             std::to_string(svIt->second.clusters);
+        // Reference-allele variant (Vars.referenceVariant): the ref base treated as a Variant, with the
+        // same field mapping as a normal SNV variant. Consumed by the somatic LOH/StrongLOH paths.
+        if (refVar) {
+            Variant rv;
+            rv.startPosition = position; rv.endPosition = position;
+            rv.refallele = std::string(1, refBase);
+            rv.varallele = std::string(1, refBase);
+            rv.totalPosCoverage = totalCov;
+            // The reference variant carries NO alt: its position/alt counts are 0 and the ref reads live
+            // in refFwd/refRev. Its mean stats still come from the ref reads (refVar->varsCount denom).
+            rv.varsCount = 0;
+            rv.varFwd = 0; rv.varRev = 0;
+            rv.refFwd = refVar->varsCountOnForward; rv.refRev = refVar->varsCountOnReverse;
+            rv.frequency = 0;
+            rv.pmean = refVar->varsCount ? refVar->meanPosition / refVar->varsCount : 0;
+            rv.qmean = refVar->varsCount ? refVar->meanQuality / refVar->varsCount : 0;
+            rv.mapq  = refVar->varsCount ? refVar->meanMappingQuality / refVar->varsCount : 0;
+            rv.nm    = refVar->varsCount ? refVar->numberOfMismatches / refVar->varsCount : 0;
+            rv.pstd  = refVar->pstd ? 1 : 0;
+            rv.qstd  = refVar->qstd ? 1 : 0;
+            rv.hicnt = refVar->highQualityReadsCount; rv.hicov = hicov;
+            rv.hifreq = hicov > 0 ? (double)refVar->highQualityReadsCount / hicov : 0;
+            rv.extrafreq = (refVar->extracnt != 0 && totalCov > 0) ? (double)refVar->extracnt / totalCov : 0;
+            rv.qratio = refVar->lowQualityReadsCount > 0
+                      ? (double)refVar->highQualityReadsCount / refVar->lowQualityReadsCount
+                      : (double)refVar->highQualityReadsCount / 0.5;
+            rv.bias = std::to_string(strandBias(rv.refFwd, rv.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+                    + ";" + std::to_string(strandBias(rv.varFwd, rv.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias));
+            rv.duprate = vd.duprate();
+            rv.vartype = classifyType(rv.refallele, rv.varallele);
+            rv.descriptionString = std::string(1, refBase);
+            {
+                std::string genotype = positionGenotype1 + "/" + std::string(1, refBase);
+                std::string cleaned;
+                for (char ch : genotype) { if (ch == '&' || ch == '#') continue; cleaned += (ch == '^') ? 'i' : ch; }
+                rv.genotype = cleaned;
+            }
+            for (int i = 20; i >= 1; --i) if (position - i >= 1 && ref.has(position - i)) rv.leftseq += ref.at(position - i);
+            for (int i = 1; i <= 20; ++i) if (ref.has(position + i)) rv.rightseq += ref.at(position + i);
+            sp.referenceVariant = std::move(rv);
+            sp.hasRef = true;
+        }
 
         // Records a built variant into the position group with good flag + description string.
         auto record = [&](Variant&& var, const std::string& desc) {
@@ -765,7 +810,8 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
 
         for (const auto& [allele, v] : alleleMap) {
             if (allele.size() == 1 && allele[0] == refBase) continue;
-            if (v.varsCount < cfg.minReads) continue;
+            // Somatic keeps every allele (even below -r) so the cross-sample descriptionString lookups
+            // (LOH / paired match) can find it; -r only gates the good flag via isGoodVar.
             double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
 
             Variant var;
@@ -897,7 +943,6 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             int insHicov = hicov;
             for (const auto& [allele, v] : insIt->second) {   // std::map sorted == Java Collections.sort
                 if (insHicov < v.highQualityReadsCount) insHicov = v.highQualityReadsCount;
-                if (v.varsCount < cfg.minReads) continue;
                 double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
                 Variant var;
                 var.startPosition = position; var.endPosition = position;
