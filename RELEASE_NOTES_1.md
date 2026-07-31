@@ -50,4 +50,5 @@ base × allele, where the native implementation stays flat instead of scaling in
   differs in allele representation.
 - Real-WES parity is ~95% byte-identical (see Correctness); the remaining SV/large-indel/coverage edge
   cases are the roadmap.
-- Splicing mode is not ported.
+- Splice junctions are handled (N-op intron spans reject splice-junction deletions in isGoodVar,
+  verified against Java on a synthetic spliced fixture).

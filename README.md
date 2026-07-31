@@ -254,9 +254,12 @@ StrongSomatic / Deletion / SampleSpecific) and **55 of 56 rows are byte-identica
   variants below `-r + 3` coverage, which the test pair does not contain, so it is currently a stub.
 - The one non-identical somatic row above: a complex-deletion allele representation at a 2-read
   position (visible only in somatic's no-drop mode) — the same complex-indel residual class as WES.
-- **Splicing** mode.
 - The handful of WES edge-case FP/FN noted above (hardest CIGAR-rewrite / distributed-coverage
   positions, e.g. the `TCC>ACG` Depth 46 vs 35 distributed-indel coverage).
+
+**Splice** junctions are handled: an `N` CIGAR op records its intron span, and `isGoodVar` rejects a
+`Deletion` whose coordinates match a junction (verified against Java on a synthetic spliced fixture —
+the deletion is called without splice reads and rejected with them, identically in both).
 
 ## Input validation and error messages
 
