@@ -1,5 +1,6 @@
 #include "somatic.hpp"
 #include <cstdio>
+#include <cctype>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -13,6 +14,15 @@ namespace vardict {
 static double round4(double x) {
     char buf[32];
     std::snprintf(buf, sizeof(buf), "%.4f", x);
+    return std::atof(buf);
+}
+
+// Round to n decimals with round-half-to-even (matches Java Utils.roundHalfEven). ToVarsBuilder
+// stores pmean/qmean/mapq/nm at 1 dp and frequency/hifreq/extrafreq at 4 dp, so combineAnalysis reads
+// those ALREADY-ROUNDED values; cpp stores them raw and must round at read time to match byte-for-byte.
+static double roundNloc(double x, int n) {
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%.*f", n, x);
     return std::atof(buf);
 }
 
@@ -84,6 +94,81 @@ static std::string determinateType(const Config& cfg, const Variant& standardVar
         type = "StrongSomatic";
     }
     return type;
+}
+
+// VarDict strand-bias flag (variations/VariationUtils.strandBias), reimplemented locally for the
+// combineAnalysis back-subtraction bias string. minBiasReads==0 is treated as 2 (matching tovars call sites).
+static int strandBiasLocal(int fwd, int rev, const Config& cfg) {
+    int minb = cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads;
+    if (fwd + rev <= 12) return (fwd > 0 && rev > 0) ? 2 : 0;
+    double tot = fwd + rev;
+    bool ok = (fwd / tot >= cfg.bias) && (rev / tot >= cfg.bias) && fwd >= minb && rev >= minb;
+    return ok ? 2 : 1;
+}
+
+// jregex MINUS_NUM_NUM "-\d\d" with .find() (search): a '-' immediately followed by two digits anywhere.
+static bool minusNumNum(const std::string& s) {
+    for (size_t i = 0; i + 2 < s.size(); ++i)
+        if (s[i] == '-' && std::isdigit((unsigned char)s[i + 1]) && std::isdigit((unsigned char)s[i + 2]))
+            return true;
+    return false;
+}
+
+// SomaticPostProcessModule.combineAnalysis: re-run the pipeline over a widened region on the MERGED
+// bam1+bam2 read stream (via the `combine` callback), find the merged variant at (position, desc), and
+// if the merged coverage exceeds variant1's by >= minr, back-subtract to fill variant2 (the placeholder
+// for the OTHER sample) and reclassify as Germline. Returns "FALSE" (drop), "Germline" (reclassified),
+// or "" (unchanged). Mirrors the Java field arithmetic and clamps exactly.
+static std::string combineAnalysis(const Config& cfg, const CombineFn& combine,
+                                   const Variant& variant1, Variant& variant2,
+                                   int position, const std::string& desc) {
+    // Don't do it for structural variants.
+    if (variant1.endPosition - variant1.startPosition > cfg.SVMINLEN) return "";
+    if (!combine) return ""; // callback disabled -> no refinement
+    Variant vref;
+    if (!combine(variant1.startPosition, variant1.endPosition, position, desc, vref)) {
+        return "FALSE"; // no matching merged variant (Java: getVarMaybe == null)
+    }
+    if (vref.varsCount - variant1.varsCount >= cfg.minReads) {
+        variant2.totalPosCoverage = std::max(0, vref.totalPosCoverage - variant1.totalPosCoverage);
+        variant2.varsCount        = std::max(0, vref.varsCount        - variant1.varsCount);
+        variant2.refFwd           = std::max(0, vref.refFwd           - variant1.refFwd);
+        variant2.refRev           = std::max(0, vref.refRev           - variant1.refRev);
+        variant2.varFwd           = std::max(0, vref.varFwd           - variant1.varFwd);
+        variant2.varRev           = std::max(0, vref.varRev           - variant1.varRev);
+        if (variant2.varsCount != 0) {
+            double pc = variant2.varsCount;
+            // Java reads the stored (rounded) mean fields: pmean/qmean/mapq/nm at 1 dp, hifreq/extrafreq
+            // at 4 dp. Round the raw cpp values here so the back-subtraction matches byte-for-byte.
+            double v1p = roundNloc(variant1.pmean, 1),     vrp = roundNloc(vref.pmean, 1);
+            double v1q = roundNloc(variant1.qmean, 1),     vrq = roundNloc(vref.qmean, 1);
+            double v1m = roundNloc(variant1.mapq, 1),      vrm = roundNloc(vref.mapq, 1);
+            double v1h = roundNloc(variant1.hifreq, 4),    vrh = roundNloc(vref.hifreq, 4);
+            double v1e = roundNloc(variant1.extrafreq, 4), vre = roundNloc(vref.extrafreq, 4);
+            double v1n = roundNloc(variant1.nm, 1),        vrn = roundNloc(vref.nm, 1);
+            variant2.pmean     = (vrp * vref.varsCount - v1p * variant1.varsCount) / pc;
+            variant2.qmean     = (vrq * vref.varsCount - v1q * variant1.varsCount) / pc;
+            variant2.mapq      = (vrm * vref.varsCount - v1m * variant1.varsCount) / pc;
+            variant2.hifreq    = (vrh * vref.varsCount - v1h * variant1.varsCount) / pc;
+            variant2.extrafreq = (vre * vref.varsCount - v1e * variant1.varsCount) / pc;
+            variant2.nm        = (vrn * vref.varsCount - v1n * variant1.varsCount) / pc;
+        } else {
+            variant2.pmean = 0; variant2.qmean = 0; variant2.mapq = 0;
+            variant2.hifreq = 0; variant2.extrafreq = 0; variant2.nm = 0;
+        }
+        variant2.pstd = 1; // isAtLeastAt2Positions = true
+        variant2.qstd = 1; // hasAtLeast2DiffQualities = true
+        if (variant2.totalPosCoverage <= 0) return "FALSE";
+        variant2.frequency = variant2.varsCount / (double)variant2.totalPosCoverage;
+        variant2.qratio = variant1.qratio; // Can't back-calculate; inherits variant1's ratio
+        variant2.genotype = vref.genotype;
+        variant2.bias = std::to_string(strandBiasLocal(variant2.refFwd, variant2.refRev, cfg)) + ";" +
+                        std::to_string(strandBiasLocal(variant2.varFwd, variant2.varRev, cfg));
+        return "Germline";
+    } else if (vref.varsCount < variant1.varsCount - 2) {
+        return "FALSE";
+    }
+    return "";
 }
 
 // The 18-field per-sample block (Depth..NM). A null slot prints 18 zeros (matching a null Variant).
@@ -161,7 +246,9 @@ static void callingForOneSample(std::string& out, const Config& cfg, const std::
 
 // SomaticPostProcessModule.printVariationsFromFirstSample.
 static void printVariationsFromFirstSample(std::string& out, const Config& cfg, const std::string& sample,
-                                           const Region& region, const SomaticPosition* v1, const SomaticPosition* v2) {
+                                           const Region& region, int position,
+                                           const SomaticPosition* v1, const SomaticPosition* v2,
+                                           const CombineFn& combine) {
     const std::string& sv1 = v1->sv;
     const std::string& sv2 = v2->sv;
     size_t n = 0;
@@ -175,7 +262,7 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
         if (v2nt != nullptr) {
             std::string type = determinateType(cfg, vref, *v2nt);
             printSomatic(out, sample, region, &vref, v2nt, &vref, v2nt, sv1, sv2, type);
-        } else { // sample 1 only, strong somatic (combineAnalysis deferred)
+        } else { // sample 1 only, should be strong somatic
             Variant varForPrint;
             const Variant* varForPrintPtr = nullptr;
             if (!v2->variants.empty()) {
@@ -189,7 +276,20 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
             } else {
                 varForPrintPtr = nullptr;
             }
-            printSomatic(out, sample, region, &vref, &vref, &vref, varForPrintPtr, sv1, sv2, "StrongSomatic");
+            std::string type = "StrongSomatic";
+            Variant v2nt2; // Java: new Variant() placeholder, filled by combineAnalysis on Germline
+            if (vref.vartype != "SNV" && (nt.size() > 10 || minusNumNum(nt))) {
+                if (vref.varsCount < cfg.minReads + 3 && nt.find('<') == std::string::npos) {
+                    std::string newtype = combineAnalysis(cfg, combine, vref, v2nt2, position, nt);
+                    if (newtype == "FALSE") { ++n; continue; }
+                    if (!newtype.empty()) type = newtype;
+                }
+            }
+            if (type == "StrongSomatic") {
+                printSomatic(out, sample, region, &vref, &vref, &vref, varForPrintPtr, sv1, sv2, "StrongSomatic");
+            } else {
+                printSomatic(out, sample, region, &vref, &vref, &vref, &v2nt2, sv1, sv2, type);
+            }
         }
         ++n;
     }
@@ -230,14 +330,29 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
 
 // SomaticPostProcessModule.printVariationsFromSecondSample (sample 1 has only reference).
 static void printVariationsFromSecondSample(std::string& out, const Config& cfg, const std::string& sample,
-                                            const Region& region, const SomaticPosition* v1, const SomaticPosition* v2) {
+                                            const Region& region, int position,
+                                            const SomaticPosition* v1, const SomaticPosition* v2,
+                                            const CombineFn& combine) {
     const std::string& sv2 = v2->sv;
     for (const Variant& v2var0 : v2->variants) {
         if (v2var0.refallele == v2var0.varallele) continue;
         if (!v2var0.good) continue;
-        std::string type = "StrongLOH"; // combineAnalysis deferred
-        const Variant* v1ref = v1->hasRef ? &v1->referenceVariant : nullptr;
-        const Variant* varForPrint = v1ref;
+        const std::string& descriptionString = v2var0.descriptionString;
+        std::string type = "StrongLOH";
+        Variant v1nt; // Java: v1.varDescriptionStringToVariants.computeIfAbsent -> new Variant() (posCov 0)
+        std::string newType;
+        if (v2var0.varsCount < cfg.minReads + 3 && descriptionString.find('<') == std::string::npos
+                && (descriptionString.size() > 10 || minusNumNum(descriptionString))) {
+            newType = combineAnalysis(cfg, combine, v2var0, v1nt, position, descriptionString);
+            if (newType == "FALSE") continue;
+        }
+        const Variant* varForPrint;
+        if (!newType.empty()) {
+            type = newType;
+            varForPrint = &v1nt;
+        } else {
+            varForPrint = v1->hasRef ? &v1->referenceVariant : nullptr;
+        }
         Variant v2varc = v2var0;
         if (v2varc.vartype == "Complex") adjComplex(v2varc);
         printSomatic(out, sample, region, &v2varc, &v2varc, varForPrint, &v2varc, "", sv2, type);
@@ -245,18 +360,21 @@ static void printVariationsFromSecondSample(std::string& out, const Config& cfg,
 }
 
 static void callingForBothSamples(std::string& out, const Config& cfg, const std::string& sample,
-                                  const Region& region, const SomaticPosition* v1, const SomaticPosition* v2) {
+                                  const Region& region, int position,
+                                  const SomaticPosition* v1, const SomaticPosition* v2,
+                                  const CombineFn& combine) {
     if (v1->variants.empty() && v2->variants.empty()) return;
     if (!v1->variants.empty()) {
-        printVariationsFromFirstSample(out, cfg, sample, region, v1, v2);
+        printVariationsFromFirstSample(out, cfg, sample, region, position, v1, v2, combine);
     } else if (!v2->variants.empty()) {
-        printVariationsFromSecondSample(out, cfg, sample, region, v1, v2);
+        printVariationsFromSecondSample(out, cfg, sample, region, position, v1, v2, combine);
     }
 }
 
 void appendSomaticRegion(std::string& out, const Config& cfg, const Region& region,
                          const std::vector<SomaticPosition>& tumor,
-                         const std::vector<SomaticPosition>& normal) {
+                         const std::vector<SomaticPosition>& normal,
+                         const CombineFn& combine) {
     std::string sample = cfg.sample;
     if (!cfg.sample2.empty()) sample += "|" + cfg.sample2;
 
@@ -278,7 +396,7 @@ void appendSomaticRegion(std::string& out, const Config& cfg, const Region& regi
         } else if (!v2) {
             callingForOneSample(out, cfg, sample, region, v1, false, "SampleSpecific");
         } else {
-            callingForBothSamples(out, cfg, sample, region, v1, v2);
+            callingForBothSamples(out, cfg, sample, region, position, v1, v2, combine);
         }
     }
 }

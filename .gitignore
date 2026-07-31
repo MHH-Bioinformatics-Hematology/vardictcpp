@@ -5,3 +5,5 @@ compile_commands.json
 
 # keep committed golden test outputs
 !test/data/golden.simple.tsv
+!bench/somatic_dev/golden_som.tsv
+!bench/somatic_dev/golden_comb.tsv

@@ -356,6 +356,27 @@ static int run(int argc, char** argv) {
         return vd;
     };
 
+    // combineAnalysis merged pipeline: CigarParser runs over BOTH BAMs into ONE VariationData (they
+    // accumulate), then the same realign/SV/adjSNV sequence as runPipeline. Mirrors SomaticMode.pipeline
+    // invoked with bam = bam1:bam2 inside SomaticPostProcessModule.combineAnalysis.
+    auto runMergedPipeline = [&](Reference& ref, BamReader& b1, BamReader& b2, const Region& region) {
+        ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
+        VariationData vd;
+        CigarParser(c, ref, b1).process(region, vd);
+        CigarParser(c, ref, b2).process(region, vd);
+        if (!c.disableSV) filterSVStructures(vd, vd.maxReadLength);
+        adjustMNP(vd, ref, c, region);
+        realigndel(vd, ref, c, region, vd.maxReadLength);
+        realignins(vd, ref, c, region, vd.maxReadLength);
+        realignlgdel(vd, ref, c, region, vd.maxReadLength);
+        realignlgins30(vd, ref, c, region, vd.maxReadLength);
+        realignlgins(vd, ref, c, region, vd.maxReadLength);
+        if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
+        if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
+        adjSNV(vd, ref);
+        return vd;
+    };
+
     auto processRegion = [&](const Region& region, Reference& ref, BamReader& bam, BamReader* bam2) {
         std::string buf;
         if (c.somatic) {
@@ -367,7 +388,22 @@ static int run(int argc, char** argv) {
             auto pos1 = callVariantsSomatic(c, region, vd1, ref);
             VariationData vd2 = runPipeline(ref, *bam2, region);
             auto pos2 = callVariantsSomatic(c, region, vd2, ref);
-            appendSomaticRegion(buf, c, region, pos1, pos2);
+            int maxRL = std::max(vd1.maxReadLength, vd2.maxReadLength);
+            // combineAnalysis callback: re-run the merged pipeline over a widened window and return the
+            // variant at (position, desc). pos1/pos2 are already built, so reloading `ref` here is safe.
+            CombineFn combine = [&, maxRL](int vstart, int vend, int position,
+                                           const std::string& desc, Variant& outv) -> bool {
+                Region r2; r2.chr = region.chr; r2.start = vstart - maxRL; r2.end = vend + maxRL; r2.gene = region.gene;
+                VariationData vdm = runMergedPipeline(ref, bam, *bam2, r2);
+                auto posm = callVariantsSomatic(c, r2, vdm, ref);
+                for (const auto& sp : posm) {
+                    if (sp.position != position) continue;
+                    for (const auto& vv : sp.variants)
+                        if (vv.descriptionString == desc) { outv = vv; return true; }
+                }
+                return false;
+            };
+            appendSomaticRegion(buf, c, region, pos1, pos2, combine);
         } else {
             VariationData vd = runPipeline(ref, bam, region);
             auto variants = callVariants(c, region, vd, ref);
