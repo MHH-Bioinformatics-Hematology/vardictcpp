@@ -54,16 +54,35 @@ void Reference::buildSeed() const {
     seed17_.clear(); seed12_.clear();
     seedBuilt_ = true;
     const int n = (int)seq_.size();
-    if (n > 0) seed17_.reserve((size_t)n);
+    if (n <= 0) return;
+    seed17_.reserve((size_t)n);
     const char* s = seq_.data();
-    for (int i = 0; i + SEED_1 <= n; ++i) {
-        auto r = seed17_.emplace(encodeKmer(s + i, SEED_1), i + loadedStart_);
-        if (!r.second) r.first->second = 0;               // second occurrence -> not unique
-    }
-    for (int i = 0; i + SEED_2 <= n; ++i) {
-        auto r = seed12_.emplace(encodeKmer(s + i, SEED_2), i + loadedStart_);
-        if (!r.second) r.first->second = 0;
-    }
+
+    // Classify all bases to their 3-bit codes once (SIMD), then slide a rolling k-mer encode across the
+    // code array. This replaces the previous per-position encodeKmer (which re-read k bases for every
+    // position, O(n*k)) with an O(n) pass whose k-mer values are bit-for-bit identical, so the seed
+    // maps -- and therefore all downstream calls -- are unchanged. Only positions that could occur more
+    // than once are marked 0 (VarDict treats those as non-unique), exactly as before.
+    std::vector<unsigned char> code((size_t)n);
+    simd::encode_bases(s, code.data(), (size_t)n);
+
+    auto build = [&](int k, std::unordered_map<uint64_t, int>& m) {
+        if (n < k) return;
+        const uint64_t lowMask = (1ULL << (3 * (k - 1))) - 1; // keeps all but the top base before shift
+        uint64_t enc = 0;
+        for (int j = 0; j < k; ++j) enc = (enc << 3) | code[j];  // first window == encodeKmer(s, k)
+        {
+            auto r = m.emplace(enc, 0 + loadedStart_);
+            if (!r.second) r.first->second = 0;
+        }
+        for (int i = 1; i + k <= n; ++i) {
+            enc = ((enc & lowMask) << 3) | code[i + k - 1];     // drop oldest base, append the new one
+            auto r = m.emplace(enc, i + loadedStart_);
+            if (!r.second) r.first->second = 0;
+        }
+    };
+    build(SEED_1, seed17_);
+    build(SEED_2, seed12_);
 }
 
 } // namespace vardict
