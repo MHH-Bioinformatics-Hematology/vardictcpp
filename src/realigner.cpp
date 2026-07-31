@@ -93,6 +93,15 @@ static std::string joinRef(Reference& ref, int from, int to) {
     for (int i = from; i <= to; ++i) if (ref.has(i)) s += ref.at(i);
     return s;
 }
+
+// VariationUtils.joinRef(Map,int,double) overload: iterates with a STRICT `i < to` (exclusive upper
+// bound), unlike the int overload's inclusive `i <= to`. Used by realignlgins30's tandem-duplication
+// branch, where the bound is a floating-point expression.
+static std::string joinRef(Reference& ref, int from, double to) {
+    std::string s;
+    for (int i = from; i < to; ++i) if (ref.has(i)) s += ref.at(i);
+    return s;
+}
 static std::string joinRefFor5Lgins(Reference& ref, int from, int to, const std::string& seq, const std::string& EXTRA) {
     std::string sb;
     for (int i = from; i <= to; ++i) {
@@ -1056,7 +1065,7 @@ void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const 
                         if ((p3 - p5 + (int)ins.size()) % tnr == 0) rpt++;
                         tnr++;
                     }
-                    tmp += joinRef(ref, p5, (int)(p5 + (p3 - p5 + (int)ins.size()) / (double)rpt - (int)ins.size()));
+                    tmp += joinRef(ref, p5, p5 + (p3 - p5 + (int)ins.size()) / (double)rpt - (int)ins.size());
                     ins = "+" + tmp + ins;
                 } else {
                     tmp += joinRef(ref, p5, p3 - 1);
