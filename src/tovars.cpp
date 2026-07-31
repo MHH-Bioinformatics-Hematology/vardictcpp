@@ -330,6 +330,15 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         int finalTotalCov = totalCov;
         int refFwdOut = refVar ? refVar->varsCountOnForward : 0;
         int refRevOut = refVar ? refVar->varsCountOnReverse : 0;
+        // The reference component of the strand-bias flag is the reference variant's OWN frozen flag
+        // (ToVarsBuilder line 937-941: referenceVariant.strandBiasFlag), computed from the ref
+        // Variation's getDir counts at position -- NOT recomputed from the displayed RefFwd/RefRev,
+        // which for insertions are re-sourced from the position+1 reference variation. If no reference
+        // variant exists (varsCount==0), Java prepends "0".
+        std::string refBiasFlag = (refVar && refVar->varsCount > 0)
+            ? std::to_string(strandBias(refVar->varsCountOnForward, refVar->varsCountOnReverse,
+                                        cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+            : "0";
         // Per-insertion ttcov (ToVarsBuilder.createInsertion): the frequency/extraFrequency denominator
         // for each insertion, which can EXCEED the position Depth (the running totalPosCoverage is only
         // bumped in the `ttcov < varsCount` branch, but the extracnt branch raises ttcov without it).
@@ -396,7 +405,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             var.qratio = v.lowQualityReadsCount > 0
                        ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                        : (double)v.highQualityReadsCount / 0.5; // hi/lo signal-to-noise
-            var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+            var.bias = refBiasFlag
                      + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias));
             var.duprate = vd.duprate();
 
@@ -682,7 +691,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.qratio = v.lowQualityReadsCount > 0
                            ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                            : (double)v.highQualityReadsCount / 0.5;
-                var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads, cfg.bias))
+                var.bias = refBiasFlag
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
