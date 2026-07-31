@@ -42,6 +42,10 @@ void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region&
 // StructuralVariantsProcessor.findsv: split-read SVs from soft clips. Only the candidate-inversion
 // path is emitted here (<INV>); runs after realignment, before findDELdisc (findAllSVs order).
 void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
-void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+// `reload` re-reads coverage at a large-insertion breakpoint landing outside the region (bi>region.end
+// for a 5' clip, bi<region.start for a 3' clip), mirroring the partialPipeline reload so a low-VAF
+// duplication/large insertion is AF-filtered instead of pinned at AF=1.0.
+void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+                  int maxReadLength, const SVReloadFn& reload);
 
 } // namespace vardict

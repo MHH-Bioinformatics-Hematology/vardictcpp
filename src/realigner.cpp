@@ -1191,7 +1191,8 @@ static std::pair<int,int> markDUPSV(int start, int end,
     return {cnt, pairs};
 }
 
-void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+                  int maxReadLength, const SVReloadFn& reload) {
     auto& NIV = vd.nonInsertionVariants;
     const int EXT = Config::EXTENSION;
     auto collect = [&](std::map<int, Sclip>& clips) {
@@ -1218,6 +1219,14 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             Match match = findMatch(seq, ref, p, -1, Reference::SEED_1, 1);
             bi = match.bp; std::string EXTRA = match.extra;
             if (!(bi != 0 && bi - p > 15 && bi - p < Config::SVMAXLEN)) continue;
+            // Large insertion whose partner lands past the region end: re-read coverage over
+            // [tts, tte] so refCoverage reflects the true depth (VariationRealigner 1648-1662).
+            if (bi > region.end) {
+                int tts = bi - maxReadLength;
+                int tte = bi + maxReadLength;
+                if (bi - maxReadLength <= region.end) tts = region.end + 1;
+                reload(tts + 200, tte - 200);
+            }
             if (bi - p > cfg.SVMINLEN + 2 * Config::SVFLANK) {
                 ins = joinRef(ref, p, p + Config::SVFLANK - 1);
                 ins += "<dup" + std::to_string(bi - p - 2 * Config::SVFLANK + 1) + ">";
@@ -1276,6 +1285,14 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             Match match = findMatch(seq, ref, p, 1, Reference::SEED_1, 1);
             bi = match.bp; std::string EXTRA = match.extra;
             if (!(bi != 0 && p - bi > 15 && p - bi < Config::SVMAXLEN)) continue;
+            // Large insertion whose partner lands before the region start: re-read coverage over
+            // [tts, tte] so refCoverage reflects the true depth (VariationRealigner 1812-1828).
+            if (bi < region.start) {
+                int tts = bi - maxReadLength;
+                int tte = bi + maxReadLength;
+                if (bi + maxReadLength >= region.start) tte = region.start - 1;
+                reload(tts + 200, tte - 200);
+            }
             int shift5 = 0;
             while (ref.has(p - 1) && ref.has(bi - 1) && ref.at(p - 1) == ref.at(bi - 1)) { p--; bi--; shift5++; }
             if (p - bi > cfg.SVMINLEN + 2 * Config::SVFLANK) {
