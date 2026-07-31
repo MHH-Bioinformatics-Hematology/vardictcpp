@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cmath>
 #include <string>
+#include <vector>
 
 namespace vardict {
 
@@ -70,8 +71,14 @@ static void appendVariantFisher(std::string& out, const Config& cfg, const Regio
     if (v.nm > 0) { char nbuf[64]; std::snprintf(nbuf, sizeof(nbuf), "%.1f", v.nm); nm = nbuf; } else nm = "0";
     std::string dup   = getRounded(2, v.duprate);
 
-    char buf[1024];
-    std::snprintf(buf, sizeof(buf),
+    // Size to the variable-length content (see appendVariant); a fixed buffer truncates large complex
+    // variants, losing the trailing columns and newline and merging the next variant onto the line.
+    size_t cap = 512 + cfg.sample.size() + region.gene.size() + 2 * region.chr.size()
+               + v.refallele.size() + v.varallele.size() + v.genotype.size() + v.bias.size()
+               + v.leftseq.size() + v.rightseq.size() + v.vartype.size() + v.svInfo.size()
+               + pvalue.size() + oddratio.size();
+    std::vector<char> buf(cap);
+    std::snprintf(buf.data(), cap,
         "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t"
         "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\n",
         cfg.sample.c_str(),
@@ -110,7 +117,7 @@ static void appendVariantFisher(std::string& out, const Config& cfg, const Regio
         v.vartype.c_str(),
         dup.c_str(),
         v.svInfo.empty() ? "0" : v.svInfo.c_str());  // SV_info
-    out += buf;
+    out += buf.data();
 }
 
 void appendVariant(std::string& out, const Config& cfg, const Region& region, const Variant& v) {
@@ -128,8 +135,15 @@ void appendVariant(std::string& out, const Config& cfg, const Region& region, co
     std::string nm    = v.nm > 0 ? fmt(v.nm, "%.1f") : "0";
     std::string dup   = fmt(v.duprate, "%.1f");
 
-    char buf[1024];
-    std::snprintf(buf, sizeof(buf),
+    // The refallele/varallele (and left/right seq, genotype) of a large complex/insertion variant can be
+    // hundreds of bases, so a fixed buffer would truncate the line -- dropping its trailing columns AND
+    // the newline, which merges the following variant onto this line and loses it. Size the buffer to the
+    // actual variable-length content plus generous slack for the bounded numeric/format columns.
+    size_t cap = 512 + cfg.sample.size() + region.gene.size() + 2 * region.chr.size()
+               + v.refallele.size() + v.varallele.size() + v.genotype.size() + v.bias.size()
+               + v.leftseq.size() + v.rightseq.size() + v.vartype.size() + v.svInfo.size();
+    std::vector<char> buf(cap);
+    std::snprintf(buf.data(), cap,
         "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t"
         "%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\n",
         cfg.sample.c_str(),
@@ -166,7 +180,7 @@ void appendVariant(std::string& out, const Config& cfg, const Region& region, co
         v.vartype.c_str(),
         dup.c_str(),
         v.svInfo.empty() ? "0" : v.svInfo.c_str());  // SV_info: empty -> "0"
-    out += buf;
+    out += buf.data();
 }
 
 } // namespace vardict
