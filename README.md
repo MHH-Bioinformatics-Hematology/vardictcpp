@@ -67,14 +67,15 @@ output (mirrors VarDictJava's parallel mode); output is bit-identical to single-
 
 ## Whole-exome benchmark
 
-Five public whole-exome SRA runs (hg19, bwa-mem, per-sample covered-target BED), `-f 0.01`, vs stock
-VarDictJava 1.8.3. Wall clock and peak RSS from the same harness; full numbers and method in
-[bench/results_wes_v1.md](bench/results_wes_v1.md).
+Five public whole-exome SRA runs aligned to hg19 with bwa-mem, each with its own covered-target BED
+(11k-774k regions), `-f 0.01`. Wall clock and peak RSS were captured with one harness (a process-group
+RSS poll) on the same host, running each caller sequentially. Samples: SRR15006540, SRR15006376,
+SRR15006375, SRR15006386, and the 774k-region SRR8657348.
 
-Two VarDictJava releases are shown: **1.8.3** (stock upstream) and **1.8.4** (the memory-optimised fork
-in this project, run with G1 + string de-duplication by default), each on **JDK 8** (VarDict's target,
-Parallel GC) and **JDK 25** (modern default, G1). All Java runs use `-Xmx 100g`. Cells are `wall s /
-peak RSS GB`.
+Two VarDictJava releases are shown: **1.8.3** (stock upstream) and **1.8.4** (the memory-optimised
+[fork](https://github.com/joachimwolff/VarDictJava), run with G1 + string de-duplication by default),
+each on **JDK 8** (VarDict's target, Parallel GC) and **JDK 25** (modern default, G1). All Java runs
+use `-Xmx 100g`. Cells are `wall s / peak RSS GB`.
 
 **Single core (`-th 1`)**
 
@@ -95,6 +96,19 @@ peak RSS GB`.
 | SRR8657348  | 14.3 / 0.24 | 267.4 / 33.3 | 248.5 / 45.5 |
 | SRR15006375 |  8.2 / 0.28 | 130.0 / 12.8 | 136.1 /  2.9 |
 | SRR15006386 |  8.1 / 0.21 | 109.6 / 12.7 | 113.7 /  8.6 |
+
+**vardictcpp thread scaling** (wall s, `-f 0.01`)
+
+| sample | th1 | th4 | th8 | th16 |
+|---|--:|--:|--:|--:|
+| SRR15006540 | 56.8 | 16.3 | 10.2 | 8.2 |
+| SRR15006376 | 42.6 | 12.2 |  8.1 | 6.2 |
+| SRR8657348  | 93.5 | 26.5 | 14.3 | 8.2 |
+| SRR15006375 | 50.7 | 14.2 |  8.2 | 6.1 |
+| SRR15006386 | 48.7 | 14.3 |  8.1 | 6.1 |
+
+**Geomean vardictcpp advantage:** vs 1.8.3 - single core **5.8x faster / 242x less RAM**, 8 threads
+**16.2x / 85x**; vs 1.8.3 on JDK 25 - single core **6.3x / 91x**.
 
 Reading the numbers:
 
