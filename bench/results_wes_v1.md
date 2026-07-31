@@ -11,29 +11,32 @@ large 774k-region run).
 
 ## Single core (`-th 1`, `-f 0.01`)
 
-VarDictJava on both JVMs (wall s / peak RSS GB):
+VarDictJava 1.8.3 (stock) and 1.8.4 (memory fork, G1 + string dedup), each on JDK 8 and JDK 25
+(wall s / peak RSS GB):
 
-| sample | regions | vardictcpp | VarDictJava JDK 8 | VarDictJava JDK 25 |
-|---|--:|--|--|--|
-| SRR15006540 | 135k | 56.8 / 0.061 | 252.1 / 32.47 | 260.6 / 10.96 |
-| SRR15006376 | 106k | 42.6 / 0.065 | 189.0 / 21.52 | 213.8 /  9.36 |
-| SRR8657348  | 774k | 93.5 / 0.088 | 626.3 / 32.67 | 720.9 /  3.31 |
-| SRR15006375 | 12k  | 50.7 / 0.052 | 470.6 /  5.49 | 382.6 /  4.72 |
-| SRR15006386 | 12k  | 48.7 / 0.054 | 256.5 /  6.47 | 357.1 /  3.75 |
+| sample | regions | vardictcpp | 1.8.3 JDK 8 | 1.8.3 JDK 25 | 1.8.4 JDK 8 | 1.8.4 JDK 25 |
+|---|--:|--|--|--|--|--|
+| SRR15006540 | 135k | 56.8 / 0.061 | 252.1 / 32.47 | 260.6 / 10.96 | 484.5 / 2.48 | 252.5 / 10.29 |
+| SRR15006376 | 106k | 42.6 / 0.065 | 189.0 / 21.52 | 213.8 /  9.36 | 334.7 / 8.39 | 209.8 /  6.34 |
+| SRR8657348  | 774k | 93.5 / 0.088 | 626.3 / 32.67 | 720.9 /  3.31 | 552.9 / 42.03 | 720.9 /  3.80 |
+| SRR15006375 | 12k  | 50.7 / 0.052 | 470.6 /  5.49 | 382.6 /  4.72 | 408.0 / 2.73 | 376.4 /  4.73 |
+| SRR15006386 | 12k  | 48.7 / 0.054 | 256.5 /  6.47 | 357.1 /  3.75 | 375.3 / 2.61 | 330.5 /  3.84 |
 
-vardictcpp geomean advantage: **5.8x faster / 242x less RAM** vs JDK 8; **6.3x faster / 91x less RAM**
-vs JDK 25. Wall time differs by at most ~15% between the two JVMs; the JVM's main effect is memory.
+vardictcpp geomean advantage: **5.8x faster / 242x less RAM** vs 1.8.3 JDK 8; **6.3x / 91x** vs 1.8.3
+JDK 25. Wall time differs by at most ~15% across Java version and JVM; the main effect is memory - the
+1.8.4 fork's G1 default cuts JDK 8 memory to 2.5-8 GB except on the un-chunked 774k-region sample.
 
-## 8 threads (`-th 8`, `-f 0.01`) - VarDictJava on JDK 8
+## 8 threads (`-th 8`, `-f 0.01`) - multi-thread Java on JDK 8
 
-| sample | vardictcpp wall | vardictcpp RSS | VarDictJava wall | VarDictJava RSS | faster | less RAM |
-|---|--:|--:|--:|--:|--:|--:|
-| SRR15006540 | 10.2 s | 0.300 GB | 138.8 s | 33.37 GB | 13.6x | 111x |
-| SRR15006376 |  8.1 s | 0.321 GB | 166.5 s | 33.59 GB | 20.6x | 105x |
-| SRR8657348  | 14.3 s | 0.243 GB | 267.4 s | 33.29 GB | 18.7x | 137x |
-| SRR15006375 |  8.2 s | 0.279 GB | 130.0 s | 12.75 GB | 15.9x |  46x |
-| SRR15006386 |  8.1 s | 0.213 GB | 109.6 s | 12.75 GB | 13.5x |  60x |
-| **geomean** | | | | | **16.2x** | **85x** |
+Wall s / peak RSS GB. vardictcpp vs 1.8.3: geomean 16.2x faster / 85x less RAM.
+
+| sample | vardictcpp | 1.8.3 JDK 8 | 1.8.4 JDK 8 |
+|---|--|--|--|
+| SRR15006540 | 10.2 / 0.300 | 138.8 / 33.37 | 138.9 / 13.73 |
+| SRR15006376 |  8.1 / 0.321 | 166.5 / 33.59 | 153.9 / 13.72 |
+| SRR8657348  | 14.3 / 0.243 | 267.4 / 33.29 | 248.5 / 45.48 |
+| SRR15006375 |  8.2 / 0.279 | 130.0 / 12.75 | 136.1 /  2.90 |
+| SRR15006386 |  8.1 / 0.213 | 109.6 / 12.75 | 113.7 /  8.64 |
 
 ## vardictcpp thread scaling (`-f 0.01`, wall s)
 

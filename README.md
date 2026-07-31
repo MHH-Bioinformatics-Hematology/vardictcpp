@@ -71,39 +71,44 @@ Five public whole-exome SRA runs (hg19, bwa-mem, per-sample covered-target BED),
 VarDictJava 1.8.3. Wall clock and peak RSS from the same harness; full numbers and method in
 [bench/results_wes_v1.md](bench/results_wes_v1.md).
 
-**Single core (`-th 1`)** - VarDictJava shown on two JVMs (both `-Xmx 100g`): JDK 8, its documented
-target (Parallel/throughput GC), and JDK 25 (G1 GC, the modern default that Conda now resolves to).
+Two VarDictJava releases are shown: **1.8.3** (stock upstream) and **1.8.4** (the memory-optimised fork
+in this project, run with G1 + string de-duplication by default), each on **JDK 8** (VarDict's target,
+Parallel GC) and **JDK 25** (modern default, G1). All Java runs use `-Xmx 100g`. Cells are `wall s /
+peak RSS GB`.
 
-| sample | regions | vardictcpp | VarDictJava, JDK 8 | VarDictJava, JDK 25 |
-|---|--:|--|--|--|
-| SRR15006540 | 135k | 56.8 s / 0.06 GB | 252.1 s / 32.5 GB | 260.6 s / 11.0 GB |
-| SRR15006376 | 106k | 42.6 s / 0.07 GB | 189.0 s / 21.5 GB | 213.8 s /  9.4 GB |
-| SRR8657348  | 774k | 93.5 s / 0.09 GB | 626.3 s / 32.7 GB | 720.9 s /  3.3 GB |
-| SRR15006375 | 12k  | 50.7 s / 0.05 GB | 470.6 s /  5.5 GB | 382.6 s /  4.7 GB |
-| SRR15006386 | 12k  | 48.7 s / 0.05 GB | 256.5 s /  6.5 GB | 357.1 s /  3.8 GB |
+**Single core (`-th 1`)**
 
-vardictcpp vs VarDictJava geomean: **5.8x faster / 242x less RAM** against JDK 8, **6.3x faster / 91x
-less RAM** against JDK 25.
+| sample | regions | vardictcpp | 1.8.3 JDK 8 | 1.8.3 JDK 25 | 1.8.4 JDK 8 | 1.8.4 JDK 25 |
+|---|--:|--|--|--|--|--|
+| SRR15006540 | 135k | 56.8 / 0.06 | 252.1 / 32.5 | 260.6 / 11.0 | 484.5 / 2.5 | 252.5 / 10.3 |
+| SRR15006376 | 106k | 42.6 / 0.07 | 189.0 / 21.5 | 213.8 /  9.4 | 334.7 / 8.4 | 209.8 /  6.3 |
+| SRR8657348  | 774k | 93.5 / 0.09 | 626.3 / 32.7 | 720.9 /  3.3 | 552.9 / 42.0 | 720.9 /  3.8 |
+| SRR15006375 | 12k  | 50.7 / 0.05 | 470.6 /  5.5 | 382.6 /  4.7 | 408.0 / 2.7 | 376.4 /  4.7 |
+| SRR15006386 | 12k  | 48.7 / 0.05 | 256.5 /  6.5 | 357.1 /  3.8 | 375.3 / 2.6 | 330.5 /  3.8 |
 
-**8 threads (`-th 8`)**
+**8 threads (`-th 8`)** (multi-thread Java measured on JDK 8 only)
 
-| sample | vardictcpp | VarDictJava 1.8.3 | faster | less RAM |
-|---|--|--|--:|--:|
-| SRR15006540 | 10.2 s / 0.30 GB | 138.8 s / 33.4 GB | 13.6x | 111x |
-| SRR15006376 |  8.1 s / 0.32 GB | 166.5 s / 33.6 GB | 20.6x | 105x |
-| SRR8657348  | 14.3 s / 0.24 GB | 267.4 s / 33.3 GB | 18.7x | 137x |
-| SRR15006375 |  8.2 s / 0.28 GB | 130.0 s / 12.8 GB | 15.9x |  46x |
-| SRR15006386 |  8.1 s / 0.21 GB | 109.6 s / 12.7 GB | 13.5x |  60x |
-| **geomean** | | | **16.2x** | **85x** |
+| sample | vardictcpp | 1.8.3 JDK 8 | 1.8.4 JDK 8 |
+|---|--|--|--|
+| SRR15006540 | 10.2 / 0.30 | 138.8 / 33.4 | 138.9 / 13.7 |
+| SRR15006376 |  8.1 / 0.32 | 166.5 / 33.6 | 153.9 / 13.7 |
+| SRR8657348  | 14.3 / 0.24 | 267.4 / 33.3 | 248.5 / 45.5 |
+| SRR15006375 |  8.2 / 0.28 | 130.0 / 12.8 | 136.1 /  2.9 |
+| SRR15006386 |  8.1 / 0.21 | 109.6 / 12.7 | 113.7 /  8.6 |
 
-The 8-thread VarDictJava column is JDK 8. The JVM version barely changes Java's **wall time** (within
-about 15% between JDK 8 and JDK 25), but it changes its **memory** a lot: JDK 8's throughput collector
-hoards heap toward `-Xmx` (21-33 GB on the coverage-dense samples), while JDK 25's G1 releases it (3-11
-GB). Either way vardictcpp uses 40-500x less. On this noisy WES data the two callers agree on the
-variant set to within a handful of calls per sample (see
-[bench/equivalence_sra_wes.md](bench/equivalence_sra_wes.md)); on curated goldens output is
-byte-identical. For reference, on a small 698-region panel at 8 threads vardictcpp runs in
-**0.52 s / 0.05 GB** vs VarDictJava **1.88 s / 1.47 GB**.
+Reading the numbers:
+
+- **Wall time** barely moves across Java version or JVM (all within ~15%); every configuration is
+  **4-9x slower single-core and 13-21x slower at 8 threads** than vardictcpp.
+- **Memory** is where version and JVM matter. 1.8.3 on JDK 8 (Parallel GC) hoards heap toward `-Xmx`
+  (21-33 GB); switching to JDK 25 (G1) or to the 1.8.4 fork (G1 by default) drops most samples to
+  ~3-11 GB. The exception is the 774k-region SRR8657348: without `--chunk` (opt-in) even 1.8.4 stays
+  large (42 GB at `-th 8`), which is exactly the case `--chunk` targets. vardictcpp holds **0.05-0.32
+  GB** throughout - **~30-500x less than any Java configuration** here.
+- **Output.** On this noisy WES data the callers agree on the variant set to within a handful of calls
+  per sample (see [bench/equivalence_sra_wes.md](bench/equivalence_sra_wes.md)); on curated goldens
+  output is byte-identical. For reference, on a small 698-region panel at 8 threads vardictcpp runs in
+  **0.52 s / 0.05 GB** vs VarDictJava **1.88 s / 1.47 GB**.
 
 ## CLI compatibility
 
