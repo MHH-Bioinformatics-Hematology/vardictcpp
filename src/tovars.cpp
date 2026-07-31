@@ -611,6 +611,10 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 var.varFwd = v.varsCountOnForward; var.varRev = v.varsCountOnReverse;
                 var.refFwd = refFwdOut; var.refRev = refRevOut;
                 var.frequency = af;
+                // ToVarsBuilder.createInsertion: extraFrequency = extracnt / ttcov (same denominator as
+                // frequency). realignins accumulates extracnt into the insertion Variation via adjCnt;
+                // the insertion output loop previously never propagated it (AdjAF stuck at 0).
+                var.extrafreq = (v.extracnt != 0 && totalCov > 0) ? (double)v.extracnt / totalCov : 0;
                 var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
                 var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
                 var.mapq  = v.varsCount ? v.meanMappingQuality / v.varsCount : 0;
