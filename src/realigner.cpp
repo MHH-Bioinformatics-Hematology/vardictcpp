@@ -1270,6 +1270,16 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             }
         }
         sc5v.used = (bi + len != 0);
+        // VariationRealigner.realignlgins (1738-1748): re-run realignins on the freshly created
+        // insertion (the whole-map pass ran before this insertion existed) so it attracts the reads
+        // that span it, then bump the SV anchor's split count by the newly attracted reads.
+        {
+            int origCount = iref.varsCount;
+            realignOneIns(vd, ref, cfg, maxReadLength, bi, "+" + ins, origCount);
+            Variation& kref = vd.insertionVariants[bi]["+" + ins];
+            auto svit = vd.svInfoAt.find(bi);
+            if (svit != vd.svInfoAt.end()) svit->second.splits += kref.varsCount - origCount;
+        }
     }
     // 3' soft-clips
     for (auto& [p, sc3vp] : collect(vd.softClips3End)) {
@@ -1335,6 +1345,15 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             }
         }
         sc3v.used = true;
+        // VariationRealigner.realignlgins (1917-1920): re-run realignins on the created insertion and
+        // bump the SV anchor's split count by the newly attracted reads (see the 5' branch).
+        {
+            int origCount = iref.varsCount;
+            realignOneIns(vd, ref, cfg, maxReadLength, bi, "+" + ins, origCount);
+            Variation& kref = vd.insertionVariants[bi]["+" + ins];
+            auto svit = vd.svInfoAt.find(bi);
+            if (svit != vd.svInfoAt.end()) svit->second.splits += kref.varsCount - origCount;
+        }
     }
 }
 
