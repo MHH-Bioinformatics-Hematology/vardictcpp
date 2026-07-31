@@ -644,20 +644,32 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 // A complex insertion ("+X&Y", "+...#...^...") carries a matched-sequence / indel tail
                 // from CigarParser's M+I bridging; decode it into the realized ref/var alleles and
                 // adjusted positions (ToVarsBuilder). Simple insertions keep the fast path + MSI.
+                bool hasDup = allele.find("<dup") != std::string::npos;
                 bool complexIns = allele.find('&') != std::string::npos ||
                                   allele.find('#') != std::string::npos ||
-                                  allele.find("<dup") != std::string::npos;
+                                  hasDup;
                 std::string refAll = std::string(1, refBase);
                 std::string varAll = std::string(1, refBase) + allele.substr(1);
                 int startPos = position, endPos = position;
                 double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
                 std::string g2 = "+" + std::to_string((int)allele.size() - 1);
                 std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : g2;
-                if (complexIns) {
-                    applyComplexGrammar(allele, ref, refAll, varAll, startPos, endPos, g1);
+                if (hasDup || !complexIns) {
+                    // ToVarsBuilder DUP rendering (lines 690-703): a tandem duplication marked with a
+                    // <dupN> tag (realignlgins), or any insertion longer than SVMINLEN, is spelled as
+                    // <DUP>. The <dupN> count drives endPosition and genotype2 (2*SVFLANK + dupCount).
+                    if ((int)varAll.size() > cfg.SVMINLEN) { endPos += (int)varAll.size(); varAll = "<DUP>"; }
+                    size_t dp = varAll.find("<dup");
+                    if (dp != std::string::npos) {
+                        int dupCount = std::atoi(varAll.c_str() + dp + 4);
+                        endPos = startPos + (2 * Config::SVFLANK + dupCount) - 1;
+                        g2 = "+" + std::to_string(2 * Config::SVFLANK + dupCount);
+                        varAll = "<DUP>";
+                    }
                     var.vartype = classifyType(refAll, varAll);
                 } else {
-                    var.vartype = "Insertion";
+                    applyComplexGrammar(allele, ref, refAll, varAll, startPos, endPos, g1);
+                    var.vartype = classifyType(refAll, varAll);
                 }
                 // SV_info: an insertion anchored at an SV-marked position (e.g. realignlgins DUP)
                 // shares the position-level "<splits>-<pairs>-<clusters>" string (ToVarsBuilder).
@@ -1035,20 +1047,32 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 // A complex insertion ("+X&Y", "+...#...^...") carries a matched-sequence / indel tail
                 // from CigarParser's M+I bridging; decode it into the realized ref/var alleles and
                 // adjusted positions (ToVarsBuilder). Simple insertions keep the fast path + MSI.
+                bool hasDup = allele.find("<dup") != std::string::npos;
                 bool complexIns = allele.find('&') != std::string::npos ||
                                   allele.find('#') != std::string::npos ||
-                                  allele.find("<dup") != std::string::npos;
+                                  hasDup;
                 std::string refAll = std::string(1, refBase);
                 std::string varAll = std::string(1, refBase) + allele.substr(1);
                 int startPos = position, endPos = position;
                 double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
                 std::string g2 = "+" + std::to_string((int)allele.size() - 1);
                 std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : g2;
-                if (complexIns) {
-                    applyComplexGrammar(allele, ref, refAll, varAll, startPos, endPos, g1);
+                if (hasDup || !complexIns) {
+                    // ToVarsBuilder DUP rendering (lines 690-703): a tandem duplication marked with a
+                    // <dupN> tag (realignlgins), or any insertion longer than SVMINLEN, is spelled as
+                    // <DUP>. The <dupN> count drives endPosition and genotype2 (2*SVFLANK + dupCount).
+                    if ((int)varAll.size() > cfg.SVMINLEN) { endPos += (int)varAll.size(); varAll = "<DUP>"; }
+                    size_t dp = varAll.find("<dup");
+                    if (dp != std::string::npos) {
+                        int dupCount = std::atoi(varAll.c_str() + dp + 4);
+                        endPos = startPos + (2 * Config::SVFLANK + dupCount) - 1;
+                        g2 = "+" + std::to_string(2 * Config::SVFLANK + dupCount);
+                        varAll = "<DUP>";
+                    }
                     var.vartype = classifyType(refAll, varAll);
                 } else {
-                    var.vartype = "Insertion";
+                    applyComplexGrammar(allele, ref, refAll, varAll, startPos, endPos, g1);
+                    var.vartype = classifyType(refAll, varAll);
                 }
                 // SV_info: an insertion anchored at an SV-marked position (e.g. realignlgins DUP)
                 // shares the position-level "<splits>-<pairs>-<clusters>" string (ToVarsBuilder).
