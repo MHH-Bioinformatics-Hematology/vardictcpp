@@ -1,4 +1,5 @@
 #include "reference.hpp"
+#include "simd.hpp"
 #include <stdexcept>
 #include <cctype>
 #include <cstdlib>
@@ -32,7 +33,9 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
         return;
     }
     seq_.assign(raw, len);
-    for (auto& c : seq_) c = (char)std::toupper((unsigned char)c);
+    // Upper-case the whole loaded window (up to a full chromosome) with SIMD; identical result to the
+    // per-byte std::toupper, just 16 bases at a time. Portable across SSE2 / NEON / scalar.
+    if (!seq_.empty()) simd::toupper_ascii(&seq_[0], seq_.size());
     loadedStart_ = s;
     loadedChr_ = chr;
     seedBuilt_ = false;

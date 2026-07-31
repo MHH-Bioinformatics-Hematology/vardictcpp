@@ -1,4 +1,4 @@
-# vardictcpp 0.1.0
+# vardictcpp 1
 
 First release of **vardictcpp** — a C++17 port of [VarDict](https://github.com/AstraZeneca-NGS/VarDictJava)
 (AstraZeneca-NGS VarDictJava 1.8.3), built on htslib. It reproduces VarDict's variant calls while running

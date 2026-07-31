@@ -18,6 +18,11 @@
 #include "config.hpp"
 #include "region.hpp"
 #include "reference.hpp"
+#include "simd.hpp"
+
+#ifndef VARDICTCPP_VERSION
+#define VARDICTCPP_VERSION "1"
+#endif
 #include "cigar_parser.hpp"
 #include "realigner.hpp"
 #include "tovars.hpp"
@@ -118,6 +123,13 @@ static const std::map<std::string, bool> VARDICT_OPTS = {
 };
 
 static int run(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--version" || a == "-version") {
+            std::printf("vardictcpp %s (SIMD backend: %s)\n", VARDICTCPP_VERSION, simd::backend());
+            return 0;
+        }
+    }
     Config c;
     std::map<std::string, std::string> opt;   // parsed options (name -> value; flags -> "")
     std::vector<std::string> positional;

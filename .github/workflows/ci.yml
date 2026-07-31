@@ -12,36 +12,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Correctness gate: build with gcc and clang against system htslib, run the parity test suite
-  # (0 FP/0 FN vs the stored VarDictJava golden, exact Depth/AltDepth, >=95% byte-identity).
+  # Correctness + portability gate: build and run the parity suite on Linux and macOS, on both x86-64
+  # and ARM (Apple Silicon / arm64). The source has no architecture-specific intrinsics; the portable
+  # SIMD kernels compile to SSE2 on x86-64 and NEON on ARM, so a green matrix proves the same
+  # byte-identical output on every target.
   build-test:
-    name: build & test (${{ matrix.cc }})
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / ${{ matrix.arch }} / ${{ matrix.cc }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { cc: gcc,   cxx: g++ }
-          - { cc: clang, cxx: clang++ }
+          - { os: ubuntu-latest,    arch: x86_64, cc: gcc,   cxx: g++ }
+          - { os: ubuntu-latest,    arch: x86_64, cc: clang, cxx: clang++ }
+          - { os: ubuntu-24.04-arm, arch: arm64,  cc: gcc,   cxx: g++ }
+          - { os: ubuntu-24.04-arm, arch: arm64,  cc: clang, cxx: clang++ }
+          - { os: macos-13,         arch: x86_64, cc: clang, cxx: clang++ }   # Intel Mac
+          - { os: macos-14,         arch: arm64,  cc: clang, cxx: clang++ }   # Apple Silicon
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install htslib + toolchain
+      - name: Install htslib + toolchain (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libhts-dev cmake python3
+
+      - name: Install htslib + toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install htslib cmake
 
       - name: Configure & build
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
+          # htslib lives in the system paths on Linux (apt) and under the brew prefix on macOS.
+          HINTS=""
+          if [ "${{ runner.os }}" = "macOS" ]; then HINTS="-DHTSLIB_ROOT=$(brew --prefix htslib)"; fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $HINTS
+          cmake --build build -j3
+
+      - name: Show version and compiled SIMD backend
+        run: ./build/vardictcpp --version
+
+      - name: Portability guard (no host-specific ISA baked in)
+        if: runner.os == 'Linux' && matrix.arch == 'x86_64'
+        run: |
+          # A portable x86-64 build must not contain AVX/AVX-512; the default flags are architecture
+          # baseline only (SSE2). This catches an accidental -march=native creeping back in.
+          if objdump -d build/vardictcpp | grep -qE '%zmm|%ymm'; then
+            echo "::error::AVX/AVX-512 instructions found in a portable build"; exit 1
+          fi
+          echo "OK: x86-64 build uses SSE2 baseline only (no AVX/AVX-512)"
 
       - name: Test suite (parity vs VarDictJava golden)
         run: bash test/run_tests.sh
 
-  # Runtime + memory comparison vs stock VarDictJava 1.8.3 (from bioconda) on the self-contained fixture.
-  # Non-blocking (timing on shared CI runners is indicative, not a hard gate); results go to the job summary.
+  # Runtime + memory comparison vs stock VarDictJava 1.8.3 (from bioconda) on the self-contained
+  # fixture. Non-blocking (timing on shared CI runners is indicative, not a hard gate); Linux x86 only,
+  # since bioconda's vardict-java is the reference and the numbers just need one representative host.
   benchmark:
     name: runtime & memory vs VarDictJava
     needs: build-test

@@ -31,6 +31,26 @@ cmake --build build -j
 
 `build/vardictcpp` links htslib via rpath, so it runs without `LD_LIBRARY_PATH`.
 
+### Portability and SIMD
+
+The default build is **portable**: no `-march=native`, so the binary runs on any CPU of its
+architecture and builds on Linux and macOS, x86-64 and ARM / Apple Silicon (arm64). Hot loops use
+explicit SIMD through a small portable layer (`src/simd.hpp`) that selects a backend from the
+architecture *baseline* instruction set, so no ISA flag is needed and the result is bit-identical to
+the scalar path:
+
+- **x86-64** → SSE2 (guaranteed on every x86-64 CPU)
+- **ARM / Apple Silicon** → NEON
+- anything else → a scalar fallback
+
+`vardictcpp --version` prints the version and the compiled-in backend (e.g.
+`vardictcpp 1 (SIMD backend: NEON)`). For a locally built, non-distributed binary you can add
+host-specific tuning with `-DVARDICTCPP_NATIVE=ON` (adds `-march=native`, or `-mcpu=native` on ARM);
+leave it off for anything you ship, and never use it for a Bioconda build.
+
+CI builds and runs the parity suite on the full matrix (Linux and macOS, x86-64 and arm64, gcc and
+clang), so portability across those targets is enforced on every push.
+
 ## Usage
 
 ```bash
