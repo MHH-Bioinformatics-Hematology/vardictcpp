@@ -843,7 +843,7 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                      + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias));
             var.duprate = vd.duprate();
 
-            if (allele.find('&') != std::string::npos) {
+            if (allele.find('&') != std::string::npos && allele[0] != '-' && allele[0] != '+') {   // MNV / complex (e.g. "A&CG" -> ACG)
                 std::string va;
                 for (char ch : allele) if (ch != '&') va += ch;
                 var.varallele = va;
@@ -859,26 +859,75 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             } else if (allele[0] == '+') {
                 var.refallele = std::string(1, refBase);
                 var.varallele = std::string(1, refBase) + allele.substr(1);
-            } else if (allele[0] == '-') {
+            } else if (allele[0] == '-' && allele.find("<inv") != std::string::npos) {
+                // Split-read inversion (findsv): rendered as <INV> with genotype2 "<INV{N}>".
                 int dl = std::stoi(allele.substr(1));
+                var.varallele = "<INV>";
+                var.refallele = std::string(1, refBase);
+                var.startPosition = position;
+                var.endPosition = position + dl - 1;
+                if (dl < cfg.SVMINLEN) {
+                    std::string leftseq, tseq;
+                    for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
+                    for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
+                    std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
+                    std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
+                    MSIResult m = findMSI(t1, t2, leftseq);
+                    MSIResult m2 = findMSI(leftseq, t2);
+                    double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
+                    if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
+                    if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
+                    var.msi = msi; var.shift3 = shift3; var.msint = msint;
+                }
+            } else if (allele[0] == '-') {             // deletion "-N" (possibly with complex tail &/#/^)
+                int dl = std::stoi(allele.substr(1));
+                bool complexDel = allele.find('&') != std::string::npos ||
+                                  allele.find('#') != std::string::npos ||
+                                  allele.find('^') != std::string::npos;
                 char anchor = ref.has(position - 1) ? ref.at(position - 1) : refBase;
-                std::string delseq;
-                for (int i = 0; i < dl; ++i) if (ref.has(position + i)) delseq += ref.at(position + i);
-                var.varallele = std::string(1, anchor);
-                var.refallele = std::string(1, anchor) + delseq;
                 var.startPosition = position - 1;
                 var.endPosition = position + dl - 1;
-                std::string leftseq, tseq;
-                for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
-                for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
-                std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
-                std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
-                MSIResult m = findMSI(t1, t2, leftseq);
-                MSIResult m2 = findMSI(leftseq, t2);
-                double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
-                if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
-                if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
-                var.msi = msi; var.shift3 = shift3; var.msint = msint;
+                if (dl >= cfg.SVMINLEN) {
+                    var.varallele = "<DEL>";
+                    var.refallele = ref.has(var.startPosition) ? std::string(1, ref.at(var.startPosition)) : "";
+                    int tpc = var.totalPosCoverage;
+                    auto cprev = vd.refCoverage.find(var.startPosition - 1);
+                    if (cprev != vd.refCoverage.end()) tpc = cprev->second;
+                    if (v.varsCount > tpc) tpc = v.varsCount;
+                    var.totalPosCoverage = tpc;
+                    var.frequency = tpc > 0 ? (double)v.varsCount / tpc : 0;
+                } else {
+                    std::string leftseq, tseq;
+                    for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
+                    for (int q = position; q <= position + dl + 70; ++q) if (ref.has(q)) tseq += ref.at(q);
+                    std::string t1 = tseq.substr(0, std::min((size_t)dl, tseq.size()));
+                    std::string t2 = tseq.size() > (size_t)dl ? tseq.substr(dl) : std::string();
+                    MSIResult m = findMSI(t1, t2, leftseq);
+                    MSIResult m2 = findMSI(leftseq, t2);
+                    double msi = m.msi; int shift3 = m.shift3; int msint = m.msintLen;
+                    if (msi < m2.msi) { msi = m2.msi; msint = m2.msintLen; }
+                    if (dl > 0 && msi <= (double)shift3 / dl) msi = (double)shift3 / dl;
+                    var.msi = msi; var.shift3 = shift3; var.msint = msint;
+                    if (!complexDel) {
+                        std::string delseq;
+                        for (int i = 0; i < dl; ++i) if (ref.has(position + i)) delseq += ref.at(position + i);
+                        var.varallele = std::string(1, anchor);
+                        var.refallele = std::string(1, anchor) + delseq;
+                    } else {
+                        // Complex deletion "-N&ss"/"-N^ins"/"-N#seg^tail": the 5' anchor is NOT
+                        // prepended; seed refallele with deleted bases, varallele with the tail, then
+                        // apply the AMP_ATGC/HASH_CARET/CARET grammar (ToVarsBuilder 765-846).
+                        std::string varAll = allele.substr(1);       // drop '-'
+                        { size_t z = 0; while (z < varAll.size() && isdigit((unsigned char)varAll[z])) z++; varAll = varAll.substr(z); }
+                        std::string refAll;
+                        for (int i = position; i <= position + dl - 1; ++i) if (ref.has(i)) refAll += ref.at(i);
+                        int sp2 = position, ep = position + dl - 1;
+                        std::string dummy;
+                        applyComplexGrammar(allele, ref, refAll, varAll, sp2, ep, dummy);
+                        var.refallele = refAll; var.varallele = varAll;
+                        var.startPosition = sp2; var.endPosition = ep;
+                    }
+                }
             } else {
                 var.refallele = std::string(1, refBase);
                 var.varallele = allele;
