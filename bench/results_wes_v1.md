@@ -3,23 +3,28 @@
 Five public whole-exome SRA runs (hg19, bwa-mem, per-sample covered-target BED), `-f 0.01`, single
 core and multi-thread. Wall clock and peak RSS captured with the same harness (`run_capped.py`,
 process-group RSS poll). vardictcpp is the `1` release (SIMD upper-casing + SIMD/rolling seed index).
-VarDictJava 1.8.3 is stock upstream on JDK 8 (its documented target JVM), `-Xmx 100g`.
+VarDictJava 1.8.3 is stock upstream, `-Xmx 100g`, benchmarked on two JVMs: **JDK 8** (its documented
+target, Parallel/throughput GC) and **JDK 25** (modern default, G1 GC).
 
 Samples (SRA run accessions): SRR15006540, SRR15006376, SRR15006375, SRR15006386, and SRR8657348 (the
 large 774k-region run).
 
 ## Single core (`-th 1`, `-f 0.01`)
 
-| sample | regions | vardictcpp wall | vardictcpp RSS | VarDictJava wall | VarDictJava RSS | faster | less RAM |
-|---|--:|--:|--:|--:|--:|--:|--:|
-| SRR15006540 | 135k | 56.8 s | 0.061 GB | 252.1 s | 32.47 GB | 4.4x | 532x |
-| SRR15006376 | 106k | 42.6 s | 0.065 GB | 189.0 s | 21.52 GB | 4.4x | 331x |
-| SRR8657348  | 774k | 93.5 s | 0.088 GB | 626.3 s | 32.67 GB | 6.7x | 371x |
-| SRR15006375 | 12k  | 50.7 s | 0.052 GB | 470.6 s |  5.49 GB | 9.3x | 106x |
-| SRR15006386 | 12k  | 48.7 s | 0.054 GB | 256.5 s |  6.47 GB | 5.3x | 120x |
-| **geomean** | | | | | | **5.8x** | **242x** |
+VarDictJava on both JVMs (wall s / peak RSS GB):
 
-## 8 threads (`-th 8`, `-f 0.01`)
+| sample | regions | vardictcpp | VarDictJava JDK 8 | VarDictJava JDK 25 |
+|---|--:|--|--|--|
+| SRR15006540 | 135k | 56.8 / 0.061 | 252.1 / 32.47 | 260.6 / 10.96 |
+| SRR15006376 | 106k | 42.6 / 0.065 | 189.0 / 21.52 | 213.8 /  9.36 |
+| SRR8657348  | 774k | 93.5 / 0.088 | 626.3 / 32.67 | 720.9 /  3.31 |
+| SRR15006375 | 12k  | 50.7 / 0.052 | 470.6 /  5.49 | 382.6 /  4.72 |
+| SRR15006386 | 12k  | 48.7 / 0.054 | 256.5 /  6.47 | 357.1 /  3.75 |
+
+vardictcpp geomean advantage: **5.8x faster / 242x less RAM** vs JDK 8; **6.3x faster / 91x less RAM**
+vs JDK 25. Wall time differs by at most ~15% between the two JVMs; the JVM's main effect is memory.
+
+## 8 threads (`-th 8`, `-f 0.01`) - VarDictJava on JDK 8
 
 | sample | vardictcpp wall | vardictcpp RSS | VarDictJava wall | VarDictJava RSS | faster | less RAM |
 |---|--:|--:|--:|--:|--:|--:|
@@ -42,9 +47,10 @@ large 774k-region run).
 
 ## Notes
 
-- **Memory / JVM.** The VarDictJava peak RSS above is JDK 8 (VarDict's target JVM) with `-Xmx 100g`,
-  so it includes GC head-room. A modern JVM (G1, e.g. JDK 21+) lowers VarDictJava's single-core peak
-  RSS to roughly 3-11 GB - still 40-180x above vardictcpp. Wall time is essentially JVM-insensitive.
+- **Memory / JVM.** With `-Xmx 100g`, JDK 8's throughput collector hoards heap toward the cap (21-33 GB
+  on the coverage-dense samples), while JDK 25's G1 releases it (3-11 GB) - a 3-10x difference from the
+  JVM alone. vardictcpp uses 40-500x less than either. The 8-thread table below is JDK 8 only; wall
+  time is essentially JVM-insensitive (within ~15%), so only Java's memory shifts materially.
 - **Output.** On noisy whole-exome data the two callers agree on the variant *set* to within a handful
   of calls per sample (tens of FP/FN out of 12k-54k), not bit-for-bit; see
   [equivalence_sra_wes.md](equivalence_sra_wes.md). On curated goldens the output is byte-identical.
