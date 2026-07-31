@@ -330,6 +330,10 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         int finalTotalCov = totalCov;
         int refFwdOut = refVar ? refVar->varsCountOnForward : 0;
         int refRevOut = refVar ? refVar->varsCountOnReverse : 0;
+        // Per-insertion ttcov (ToVarsBuilder.createInsertion): the frequency/extraFrequency denominator
+        // for each insertion, which can EXCEED the position Depth (the running totalPosCoverage is only
+        // bumped in the `ttcov < varsCount` branch, but the extracnt branch raises ttcov without it).
+        std::map<std::string,int> insTtcov;
         {
             auto c1it = vd.refCoverage.find(position + 1);
             int cov1 = (c1it != vd.refCoverage.end()) ? c1it->second : -1;
@@ -349,6 +353,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                         }
                         runningCov = ttcov;
                     }
+                    insTtcov[al] = ttcov;
                 }
                 finalTotalCov = runningCov;
             }
@@ -601,7 +606,12 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 // minReads/isGoodVar drop happens later, so the running max must see all insertions.
                 if (insHicov < v.highQualityReadsCount) insHicov = v.highQualityReadsCount;
                 if (v.varsCount < cfg.minReads) continue;
-                double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
+                // ToVarsBuilder.createInsertion divides by the per-insertion ttcov, NOT the position
+                // Depth: when varsCount > totalCov (over-coverage) ttcov rises to varsCount so AF caps at
+                // 1.0 instead of exceeding it.
+                auto ttIt = insTtcov.find(allele);
+                int insCov = (ttIt != insTtcov.end()) ? ttIt->second : totalCov;
+                double af = insCov > 0 ? (double)v.varsCount / (double)insCov : 0.0;
                 // Per-variant -f filter removed: the position-level maxfreq gate above already
                 // decided whether this position survives (ToVarsBuilder emits every insertion at a
                 // surviving position, subject to isGoodVar).
@@ -614,7 +624,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 // ToVarsBuilder.createInsertion: extraFrequency = extracnt / ttcov (same denominator as
                 // frequency). realignins accumulates extracnt into the insertion Variation via adjCnt;
                 // the insertion output loop previously never propagated it (AdjAF stuck at 0).
-                var.extrafreq = (v.extracnt != 0 && totalCov > 0) ? (double)v.extracnt / totalCov : 0;
+                var.extrafreq = (v.extracnt != 0 && insCov > 0) ? (double)v.extracnt / insCov : 0;
                 var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
                 var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
                 var.mapq  = v.varsCount ? v.meanMappingQuality / v.varsCount : 0;
