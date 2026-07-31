@@ -2,6 +2,7 @@
 #include <map>
 #include <unordered_map>
 #include <string>
+#include <set>
 #include <stdexcept>
 #include <htslib/sam.h>
 #include "config.hpp"
@@ -64,6 +65,7 @@ struct VariationData {
     std::vector<Sclip> svfdel, svrdel;
     int  svdelfend = 0, svdelrend = 0;
     std::map<int, SVInfo> svInfoAt;             // position -> SV marker (pairs/splits/clusters)
+    std::set<std::string> splice;               // intron junctions "start-end" from N CIGAR ops
     int  maxReadLength = 0;
     int  chrLen = 0;            // length of the region's contig (for breakpoint bounds)
     long totalReads = 0;

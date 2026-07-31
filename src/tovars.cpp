@@ -116,7 +116,8 @@ static void adjComplexVar(Variant& v) {
 // Port of variations/Variant.java isGoodVar for the simple single-sample path. Reference-allele
 // stats (hicnt, mean mapping quality) are passed in from the position's ref accumulator. MSI columns
 // default to 0 until findMSI is ported, so the two MSI gates are inactive (matches a no-MSI position).
-static bool isGoodVar(const Config& c, const Variant& v, int refHicnt, double refMeanMapq) {
+static bool isGoodVar(const Config& c, const Variant& v, int refHicnt, double refMeanMapq,
+                      const std::set<std::string>& splice) {
     if (v.refallele.empty()) return false;
     if (v.frequency < c.freq || v.hicnt < c.minReads ||
         v.pmean < c.readPosFilter || v.qmean < c.goodq) {
@@ -127,7 +128,9 @@ static bool isGoodVar(const Config& c, const Variant& v, int refHicnt, double re
         double f = (1 + d) / (refMeanMapq + 1);
         if ((d - 2 < 5 && refMeanMapq > 20) || f < 0.25) return false;
     }
-    // (Deletion/splice gate omitted: splice set not tracked yet.)
+    // A deletion whose coordinates exactly match a recorded splice junction is an intron, not a variant.
+    if (v.vartype == "Deletion" &&
+        splice.count(std::to_string(v.startPosition) + "-" + std::to_string(v.endPosition))) return false;
     if (v.qratio < c.qratio) return false;
     if (v.frequency > 0.30) return true;
     if (v.mapq < c.mapqMin) return false;
@@ -580,7 +583,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             // a variant at exactly -f (raw 0.009966 -> 0.0100) passes the `frequency < -f` gate, matching
             // VarDictJava, while the stored var.frequency stays raw for identical output formatting.
             { Variant probe = var; roundProbeForFilter(probe);
-              if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1))) continue; }
+              if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1), vd.splice)) continue; }
             if (var.vartype == "Complex") adjComplexVar(var);   // SimplePostProcessModule.adjComplex
             result.push_back(std::move(var));
         }
@@ -670,7 +673,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
                 { Variant probe = var; roundProbeForFilter(probe);
-                  if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1))) continue; }
+                  if (!cfg.doPileup && !isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1), vd.splice)) continue; }
                 if (var.vartype == "Complex") adjComplexVar(var);   // SimplePostProcessModule.adjComplex
                 result.push_back(std::move(var));
             }
@@ -804,7 +807,7 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             // is retained; the stored frequency stays raw (formatting rounds identically for output).
             Variant probe = var;
             roundProbeForFilter(probe);
-            var.good = isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1));
+            var.good = isGoodVar(cfg, probe, refHicnt, roundN(refMeanMapq, 1), vd.splice);
             sp.variants.push_back(std::move(var));
         };
 

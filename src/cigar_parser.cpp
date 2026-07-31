@@ -744,7 +744,10 @@ bool CigarParser::process(const Region& region, VariationData& out) {
                 break;
             }
             case 'N':
-                rpos += len; // N (intron)
+                // Intron: record the splice junction (CigarParser.processNotMatched). isGoodVar rejects
+                // a Deletion whose coordinates equal a splice junction (it is an intron, not a deletion).
+                out.splice.insert(std::to_string(rpos - 1) + "-" + std::to_string(rpos + len - 1));
+                rpos += len;
                 break;
             case 'S': {
                 // Faithful port of processSoftClip's mis-softclip re-matching + consensus storage
