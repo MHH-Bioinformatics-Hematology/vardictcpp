@@ -7,8 +7,8 @@ several times faster and using an order of magnitude less memory.
 ## Highlights
 - **Simple mode is byte-identical** to VarDictJava 1.8.3 on the curated golden (0 FP / 0 FN), enforced
   in CI. **`--fisher`, amplicon, and structural variants** (`<DEL>` discordant-pair, `<INV>` split-read)
-  are ported and enabled; **paired somatic** parses and emits its 55-column layout but currently reads
-  only the tumor BAM (true two-BAM comparison is the main remaining port). See *Known limitations*.
+  are ported and enabled; **paired somatic** runs the pipeline on both BAMs and compares them (55/56
+  rows byte-identical to Java on the test pair). See *Known limitations*.
 - **Faster and far leaner** than stock VarDictJava (see below).
 - **Streaming, region-parallel** (`-th`) with ordered output identical to single-threaded; optional
   `--chunk` bounds memory on very large regions.
@@ -44,8 +44,10 @@ base × allele, where the native implementation stays flat instead of scaling in
 - GitHub Actions CI: gcc/clang build + parity test, plus a runtime & memory benchmark vs VarDictJava.
 
 ## Known limitations
-- **Paired somatic reads only the tumor BAM** — the 55-column layout is emitted but the normal reuses
-  the tumor counts, so there is no true two-BAM comparison yet. This is the main remaining port.
+- **Paired somatic** runs the pipeline on both BAMs and compares them (55/56 rows byte-identical to
+  Java on the test tumor|normal pair). Remaining: `combineAnalysis` (the merged-BAM refinement for
+  low-coverage long indels, not exercised by the test pair) is a stub, and one complex-deletion row
+  differs in allele representation.
 - Real-WES parity is ~95% byte-identical (see Correctness); the remaining SV/large-indel/coverage edge
   cases are the roadmap.
 - Splicing mode is not ported.

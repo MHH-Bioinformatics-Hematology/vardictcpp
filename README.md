@@ -129,10 +129,9 @@ Reading the numbers:
 vardictcpp accepts **VarDictJava 1.8.3's complete option set** (62 options) with the same
 commons-cli syntax, including single-dash multi-char options (`-th 8`, `-VS STRICT`, `-DP`, `-mfreq`).
 Options that drive the pipeline are acted on; the rest are parsed (VarDict-compatible) even where not
-yet wired. Amplicon (`-a`), `--fisher`, and the structural-variant paths are ported and enabled. The
-one partial mode is paired **somatic** (`-b 'tumor|normal'`): it parses and emits the 55-column layout
-but currently reads only the tumor BAM, so it does not yet compare against a distinct normal (see
-*Parity status*).
+yet wired. Amplicon (`-a`), `--fisher`, the structural-variant paths, and paired **somatic**
+(`-b 'tumor|normal'`, which now runs the pipeline on both BAMs and compares them) are all ported and
+enabled (see *Parity status* for the somatic residual).
 
 ## Testing
 
@@ -240,18 +239,23 @@ see [bench/equivalence_sra_wes.md](bench/equivalence_sra_wes.md)).
 
 **Ported & enabled:** CIGAR parse (+ `CigarModifier`) → MNV/MNP → soft-clip → full small + large indel
 realignment → structural variants (split-read `<INV>` via `findsv`, discordant-pair `<DEL>` via
-`findDELdisc`, `filterSVStructures` clustering) → call/format, in **simple**, **amplicon** (`-a`), and
-**`--fisher`** modes.
+`findDELdisc`, `filterSVStructures` clustering) → call/format, in **simple**, **amplicon** (`-a`),
+**`--fisher`**, and **paired somatic** modes.
+
+**Paired somatic** (`-b 'tumor|normal'`) runs the full pipeline on both BAMs and compares them
+(`SomaticMode` + `SomaticPostProcessModule`: `accept` / `callingForBothSamples` / `callingForOneSample`
+/ `determinateType`). On the test tumor|normal pair the somatic types all match (Germline / StrongLOH /
+StrongSomatic / Deletion / SampleSpecific) and **55 of 56 rows are byte-identical** to Java.
 
 **Genuinely remaining:**
 
-- **True two-BAM somatic.** `-b 'tumor|normal'` parses and emits the 55-column somatic layout, but only
-  the tumor BAM is read — the normal reuses the tumor counts (`appendSomaticRegion`/`determinateType`
-  treat `v1 == v2`), so StrongSomatic / LikelySomatic / LOH against a *distinct* normal is not real
-  yet. Completing it means running the pipeline on the second BAM and porting the two-sample
-  `SomaticPostProcessModule` comparison, verified against a Java somatic golden.
+- **`combineAnalysis`** — the somatic refinement that re-runs a merged `bam1:bam2` window to keep a
+  low-coverage long *indel* from becoming a false somatic call. It only fires for non-SNV tumor-only
+  variants below `-r + 3` coverage, which the test pair does not contain, so it is currently a stub.
+- The one non-identical somatic row above: a complex-deletion allele representation at a 2-read
+  position (visible only in somatic's no-drop mode) — the same complex-indel residual class as WES.
 - **Splicing** mode.
-- The last handful of WES edge-case FP/FN noted above (hardest CIGAR-rewrite / distributed-coverage
+- The handful of WES edge-case FP/FN noted above (hardest CIGAR-rewrite / distributed-coverage
   positions, e.g. the `TCC>ACG` Depth 46 vs 35 distributed-indel coverage).
 
 ## Input validation and error messages
