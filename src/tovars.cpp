@@ -278,10 +278,19 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 if (best) positionGenotype1 = *best;
                 else positionGenotype1 = std::string(1, refBase);
             }
-            // '+' handling (collectReferenceVariants): plain insertion -> "+<insertedLength>".
-            if (!positionGenotype1.empty() && positionGenotype1[0] == '+' &&
-                positionGenotype1.find("<dup") == std::string::npos) {
-                positionGenotype1 = "+" + std::to_string((int)positionGenotype1.size() - 1);
+            // '+' handling (collectReferenceVariants, ToVarsBuilder.java:616-622): when genotype1
+            // starts with '+', a "<dupN>" tag collapses to "+(SVFLANK+N)"; a plain insertion
+            // collapses to "+<insertedLength>".
+            if (!positionGenotype1.empty() && positionGenotype1[0] == '+') {
+                size_t dp = positionGenotype1.find("<dup");
+                if (dp != std::string::npos) {
+                    size_t ns = dp + 4, ne = ns;
+                    while (ne < positionGenotype1.size() && isdigit((unsigned char)positionGenotype1[ne])) ne++;
+                    int dupCount = std::stoi(positionGenotype1.substr(ns, ne - ns));
+                    positionGenotype1 = "+" + std::to_string(cfg.SVFLANK + dupCount);
+                } else {
+                    positionGenotype1 = "+" + std::to_string((int)positionGenotype1.size() - 1);
+                }
             }
         }
 
@@ -808,9 +817,16 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 if (best) positionGenotype1 = *best;
                 else positionGenotype1 = std::string(1, refBase);
             }
-            if (!positionGenotype1.empty() && positionGenotype1[0] == '+' &&
-                positionGenotype1.find("<dup") == std::string::npos) {
-                positionGenotype1 = "+" + std::to_string((int)positionGenotype1.size() - 1);
+            if (!positionGenotype1.empty() && positionGenotype1[0] == '+') {
+                size_t dp = positionGenotype1.find("<dup");
+                if (dp != std::string::npos) {
+                    size_t ns = dp + 4, ne = ns;
+                    while (ne < positionGenotype1.size() && isdigit((unsigned char)positionGenotype1[ne])) ne++;
+                    int dupCount = std::stoi(positionGenotype1.substr(ns, ne - ns));
+                    positionGenotype1 = "+" + std::to_string(cfg.SVFLANK + dupCount);
+                } else {
+                    positionGenotype1 = "+" + std::to_string((int)positionGenotype1.size() - 1);
+                }
             }
         }
 
