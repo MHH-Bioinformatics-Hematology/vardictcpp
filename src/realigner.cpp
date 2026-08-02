@@ -1221,6 +1221,12 @@ void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const 
             } else if (isDel) {
                 adjCnt(vref, sc3v, ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr);
                 adjCnt(vref, sc5v);
+                // VariationRealigner.realignlgins30 l.1568 re-runs realigndel on the single complex
+                // deletion it just built (Java: realigndel(null, {bi:{ins:vref.varsCount}})). Without
+                // this, the deletion never scoops the neighbouring mismatched-SNV reads, undercounting
+                // its AltDepth (e.g. SRR15006376 chr14:19488409 reported 4 instead of 22). bams=null
+                // in Java, so pass an empty list (skips the noPassingReads micro-homology branch).
+                realignOneDel(vd, ref, cfg, region, maxReadLength, std::vector<BamReader*>{}, bi, key, vref.varsCount);
             } else { adjCnt(vref, sc3v); adjCnt(vref, sc5v); }
             break;
         }
