@@ -363,6 +363,7 @@ static int run(int argc, char** argv) {
         if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload, {&b});
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
+        if (!c.disableSV) findDUPdisc(vd, ref, c, region, vd.maxReadLength, reload);
         adjSNV(vd, ref);
         return vd;
     };
@@ -391,6 +392,7 @@ static int run(int argc, char** argv) {
         if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload, {&b1, &b2});
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
+        if (!c.disableSV) findDUPdisc(vd, ref, c, region, vd.maxReadLength, reload);
         adjSNV(vd, ref);
         return vd;
     };

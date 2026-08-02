@@ -1940,6 +1940,155 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
     }
 }
 
+// StructuralVariantsProcessor.findDUPdisc (StructuralVariantsProcessor.java 1330-1608). Turns a
+// discordant duplication cluster (svfdup/svrdup) into a <DUP> at its breakpoint: refine the breakpoint
+// from the dominant soft clip's split-read match, build the "+<dup>" insertion, and fold the pair count
+// + both soft-clip split counts into the SV marker (Seg splits-pairs-clusters). Marks the cluster and
+// the reciprocal-orientation clusters used. Emission mirrors the realignlgins split-read DUP path.
+void findDUPdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+                 int maxReadLength, const SVReloadFn& reload) {
+    auto& NIV = vd.nonInsertionVariants;
+    const int SVFLANK = Config::SVFLANK;
+    auto isHasEq = [&](int a, int b) { return ref.has(a) && ref.has(b) && ref.at(a) == ref.at(b); };
+    auto isLoaded = [&](int a, int b) { return a >= ref.loadedStart() && b <= ref.loadedEnd(); };
+    auto mkTmp = [](int tcnt, int cntf, int cntr, double qf, double qr, double Qf, double Qr,
+                    double pf, double pr, double nf, double nr) {
+        Variation t; t.varsCount = tcnt; t.extracnt = tcnt; t.highQualityReadsCount = tcnt;
+        t.varsCountOnForward = cntf; t.varsCountOnReverse = cntr;
+        t.meanQuality = qf + qr; t.meanPosition = pf + pr;
+        t.meanMappingQuality = Qf + Qr; t.numberOfMismatches = nf + nr;
+        return t;
+    };
+    auto domSoft = [](const std::map<int,int>& soft) {  // soft key with max count (Java sort by value desc)
+        int bestp = 0, bestc = -1;
+        for (auto& [p, c] : soft) if (c > bestc) { bestc = c; bestp = p; }
+        return bestp;
+    };
+
+    // forward clusters (svfdup)
+    for (auto& dup : vd.svfdup) {
+        if (dup.used) continue;
+        int ms = dup.mstart, me = dup.mend, cnt = dup.varsCount, end = dup.end, start = dup.start;
+        double pmean = dup.meanPosition, qmean = dup.meanQuality, Qmean = dup.meanMappingQuality, nm = dup.numberOfMismatches;
+        (void)start;
+        if (!(cnt >= cfg.minReads + 5)) continue;
+        if (!(Qmean / cnt > Config::DISCPAIRQUAL)) continue;
+        int mlen = end - ms + maxReadLength / cnt;
+        int bp = ms - (maxReadLength / cnt) / 2;
+        int pe = end;
+        if (!isLoaded(ms, me)) {
+            if (!ref.has(bp)) ref.ensure(bp - 150, bp + 150, cfg.numberNucleotideToExtend + 300);
+            reload(ms, me);
+        }
+        int cntf = cnt, cntr = cnt;
+        double qmeanf = qmean, qmeanr = qmean, Qmeanf = Qmean, Qmeanr = Qmean;
+        double pmeanf = pmean, pmeanr = pmean, nmf = nm, nmr = nm;
+        if (!dup.soft.empty()) {
+            pe = domSoft(dup.soft);
+            auto it3 = vd.softClips3End.find(pe);
+            if (it3 == vd.softClips3End.end()) continue;
+            if (it3->second.used) continue;
+            Sclip& cs3 = it3->second;
+            cntf = cs3.varsCount; qmeanf = cs3.meanQuality; Qmeanf = cs3.meanMappingQuality;
+            pmeanf = cs3.meanPosition; nmf = cs3.numberOfMismatches;
+            std::string seq = findconseq(cs3);
+            Match match = findMatch(seq, ref, bp, 1, Reference::SEED_1, 3);
+            int tbp = match.bp;
+            if (tbp != 0 && tbp < pe) {
+                cs3.used = true;
+                while (isHasEq(pe - 1, tbp - 1)) { tbp--; if (tbp != 0) pe--; }
+                mlen = pe - tbp; bp = tbp; pe--; end = pe;
+                auto it5 = vd.softClips5End.find(bp);
+                if (it5 != vd.softClips5End.end()) {
+                    Sclip& cs5 = it5->second;
+                    cntr = cs5.varsCount; qmeanr = cs5.meanQuality; Qmeanr = cs5.meanMappingQuality;
+                    pmeanr = cs5.meanPosition; nmr = cs5.numberOfMismatches;
+                }
+            }
+        }
+        std::string ins5 = joinRef(ref, bp, bp + SVFLANK - 1);
+        std::string ins3 = joinRef(ref, pe - SVFLANK + 1, pe);
+        std::string ins = ins5 + "<dup" + std::to_string(mlen - 2 * SVFLANK) + ">" + ins3;
+        Variation& vref = getVariation(vd.insertionVariants, bp, "+" + ins);
+        vref.varsCount = 0;
+        NIV[bp];
+        SVInfo& sv = vd.svInfoAt[bp];
+        sv.type = "DUP"; sv.pairs += cnt;
+        if (dup.softp != 0) { auto it = vd.softClips3End.find(dup.softp); if (it != vd.softClips3End.end()) sv.splits += it->second.varsCount; }
+        sv.clusters++;
+        int tcnt = cntr + cntf;
+        Variation tmp = mkTmp(tcnt, cntf, cntr, qmeanf, qmeanr, Qmeanf, Qmeanr, pmeanf, pmeanr, nmf, nmr);
+        adjCnt(vref, tmp);
+        dup.used = true;
+        if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = tcnt;
+        if (vd.refCoverage.count(end) && vd.refCoverage[bp] < vd.refCoverage[end]) vd.refCoverage[bp] = vd.refCoverage[end];
+        auto tup = markDUPSV(bp, pe, {&vd.svrdup}, maxReadLength);
+        sv.clusters += tup.first;
+    }
+
+    // reverse clusters (svrdup)
+    for (auto& dup : vd.svrdup) {
+        if (dup.used) continue;
+        int ms = dup.mstart, me = dup.mend, cnt = dup.varsCount, start = dup.start;
+        double pmean = dup.meanPosition, qmean = dup.meanQuality, Qmean = dup.meanMappingQuality, nm = dup.numberOfMismatches;
+        if (cnt < cfg.minReads + 5) continue;
+        if (!(Qmean / cnt > Config::DISCPAIRQUAL)) continue;
+        int mlen = me - start + maxReadLength / cnt;
+        int bp = start - (maxReadLength / cnt) / 2;
+        int pe = mlen + bp - 1;
+        int tpe = pe;
+        if (!isLoaded(ms, me)) {
+            if (!ref.has(pe)) ref.ensure(pe - 150, pe + 150, cfg.numberNucleotideToExtend + 300);
+            reload(ms, me);
+        }
+        int cntf = cnt, cntr = cnt;
+        double qmeanf = qmean, qmeanr = qmean, Qmeanf = Qmean, Qmeanr = Qmean;
+        double pmeanf = pmean, pmeanr = pmean, nmf = nm, nmr = nm;
+        if (!dup.soft.empty()) {
+            bp = domSoft(dup.soft);
+            auto it5 = vd.softClips5End.find(bp);
+            if (it5 == vd.softClips5End.end()) continue;
+            Sclip& cs5 = it5->second;
+            if (cs5.used) continue;
+            cntr = cs5.varsCount; qmeanr = cs5.meanQuality; Qmeanr = cs5.meanMappingQuality;
+            pmeanr = cs5.meanPosition; nmr = cs5.numberOfMismatches;
+            std::string seq = findconseq(cs5);
+            Match match = findMatch(seq, ref, pe, -1, Reference::SEED_1, 3);
+            int tbp = match.bp;
+            if (tbp != 0 && tbp > bp) {
+                cs5.used = true;
+                pe = tbp; mlen = pe - bp + 1; tpe = pe + 1;
+                while (isHasEq(tpe, bp + (tpe - pe - 1))) tpe++;
+                auto it3 = vd.softClips3End.find(tpe);
+                if (it3 != vd.softClips3End.end()) {
+                    Sclip& cs3 = it3->second;
+                    cntf = cs3.varsCount; qmeanf = cs3.meanQuality; Qmeanf = cs3.meanMappingQuality;
+                    pmeanf = cs3.meanPosition; nmf = cs3.numberOfMismatches;
+                }
+            }
+        }
+        std::string ins5 = joinRef(ref, bp, bp + SVFLANK - 1);
+        std::string ins3 = joinRef(ref, pe - SVFLANK + 1, pe);
+        std::string ins = ins5 + "<dup" + std::to_string(mlen - 2 * SVFLANK) + ">" + ins3;
+        Variation& vref = getVariation(vd.insertionVariants, bp, "+" + ins);
+        vref.varsCount = 0;
+        NIV[bp];
+        SVInfo& sv = vd.svInfoAt[bp];
+        sv.type = "DUP"; sv.pairs += cnt;
+        { auto it = vd.softClips5End.find(bp);  if (it != vd.softClips5End.end()) sv.splits += it->second.varsCount; }
+        { auto it = vd.softClips3End.find(tpe); if (it != vd.softClips3End.end()) sv.splits += it->second.varsCount; }
+        sv.clusters++;
+        int tcnt = cntr + cntf;
+        Variation tmp = mkTmp(tcnt, cntf, cntr, qmeanf, qmeanr, Qmeanf, Qmeanr, pmeanf, pmeanr, nmf, nmr);
+        adjCnt(vref, tmp);
+        dup.used = true;
+        if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = tcnt;
+        if (vd.refCoverage.count(me) && vd.refCoverage[bp] < vd.refCoverage[me]) vd.refCoverage[bp] = vd.refCoverage[me];
+        auto tup = markDUPSV(bp, pe, {&vd.svfdup}, maxReadLength);
+        sv.clusters += tup.first;
+    }
+}
+
 // StructuralVariantsProcessor.findINVsub: pair-assisted inversion caller. Walks a discordant
 // same-orientation INV cluster list (svfinv5/svrinv5/svfinv3/svrinv3), takes the cluster's dominant
 // soft-clip position, finds the reciprocal breakpoint by matching the soft-clip consensus against the

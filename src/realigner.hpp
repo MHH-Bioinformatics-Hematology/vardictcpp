@@ -48,6 +48,12 @@ void findDEL(VariationData& vd, Reference& ref, const Config& cfg, const Region&
              int maxReadLength, const SVReloadFn& reload);
 void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
+// StructuralVariantsProcessor.findDUPdisc: fold discordant-pair support into a <DUP> at the dup
+// cluster's breakpoint (a duplication whose split-read path never fired but whose read pairs and soft
+// clips confirm it). Runs last in findAllSVs (after findDELdisc).
+void findDUPdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+                 int maxReadLength, const SVReloadFn& reload);
+
 // StructuralVariantsProcessor.findINV: pair-assisted <INV> caller over the discordant same-orientation
 // INV clusters. Runs after realignment, BEFORE findsv (so the split-read path skips folded soft clips).
 void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
