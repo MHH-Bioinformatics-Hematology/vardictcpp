@@ -477,7 +477,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 //   varallele = ref[position-1];  refallele = ref[position-1] + ref[position..position+dl-1]
                 //   startPosition-- ; endPosition = position + dl - 1.
                 char anchor = ref.has(position - 1) ? ref.at(position - 1) : refBase;
-                var.startPosition = position - 1;
+                // ToVarsBuilder 728-740 shifts a *simple* deletion's start one base 5' (the anchor
+                // base). A *complex* deletion ("-N&/#/^...") skips that whole block, so its start
+                // stays at `position`; cpp previously applied position-1 to both, mis-placing the
+                // <DEL> start (and, via the missing AMP tail, its end) by one/EXTRA bases.
+                var.startPosition = complexDel ? position : position - 1;
                 var.endPosition = position + dl - 1;
                 if (dl >= cfg.SVMINLEN) {
                     // Structural deletion (deletionLength >= SVMINLEN): spelled "<DEL>". The <DEL>
@@ -486,18 +490,20 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                     // not called for SVs, so shift3/MSI stay 0).
                     var.varallele = "<DEL>";
                     var.refallele = ref.has(var.startPosition) ? std::string(1, ref.at(var.startPosition)) : "";
-                    // ToVarsBuilder 796-802 / vardict.pl 2330-2334: the <DEL> depth reset to
-                    // refCoverage[startPosition-1] (and the positionCoverage clamp + frequency recompute)
-                    // lives INSIDE the AMP_ATGC ('&[ATGC]+') match block, so it applies ONLY to a
-                    // matched-sequence deletion ("-N&ATGC"). A plain structural deletion keeps
-                    // totalPosCoverage = refCoverage[position] and the frequency computed above.
-                    bool ampMatch = false;
+                    // AMP_ATGC ('&[ATGC]+') tail: the matched bases extend the deletion end
+                    // (endPosition += extra.length, ToVarsBuilder 765-777) and trigger the <DEL>
+                    // refCoverage[startPosition-1] frequency recompute (796-805).
+                    bool ampMatch = false; int extraLen = 0;
                     { auto a = allele.find('&');
                       if (a != std::string::npos && a + 1 < allele.size()) {
-                          char c = allele[a + 1];
-                          ampMatch = (c == 'A' || c == 'T' || c == 'G' || c == 'C');
+                          auto isATGC = [](char c){ return c=='A'||c=='T'||c=='G'||c=='C'; };
+                          if (isATGC(allele[a + 1])) {
+                              ampMatch = true;
+                              for (size_t z = a + 1; z < allele.size() && isATGC(allele[z]); ++z) extraLen++;
+                          }
                       } }
                     if (ampMatch) {
+                        var.endPosition += extraLen;
                         int tpc = var.totalPosCoverage;
                         auto cprev = vd.refCoverage.find(var.startPosition - 1);
                         if (cprev != vd.refCoverage.end()) tpc = cprev->second;
