@@ -35,9 +35,13 @@ public:
         return atExtra(p);
     }
     // Whether position p is within any loaded window (mirrors ref.get(p) != null).
+    // The trailing SEED_1 bases of a primary window that does NOT reach the contig end are absent
+    // from Java's referenceSequences map (ReferenceResource.getReference: siteEnd = exon.length() -
+    // SEED_1 unless len == sequenceEnd), so has() returns false there too. Consumers guard at() with
+    // has(), so this truncation alone reproduces Java's ref.get(p) == null at the padded window's tail.
     bool has(int p) const {
         int i = p - loadedStart_;
-        if (i >= 0 && i < (int)seq_.size()) return true;      // primary window fast path
+        if (i >= 0 && i < (int)seq_.size() && p <= primaryEffEnd_) return true;   // primary window fast path
         if (extra_.empty()) return false;
         return hasExtra(p);
     }
@@ -112,6 +116,10 @@ private:
     std::string seq_;            // primary window loaded by load() (the region + padding)
     std::string loadedChr_;
     int loadedStart_ = 1;        // 1-based first position of seq_ (the primary window)
+    int contigLen_ = 0;          // length of loadedChr_ (0 if unknown); used to detect end-of-contig windows
+    // Last position of the primary window that Java's referenceSequences map covers. Equal to loadedEnd()
+    // when the window reaches the contig end, else loadedEnd() - SEED_1 (Java drops the trailing SEED_1).
+    int primaryEffEnd_ = 0;
     // Extra DISJOINT windows pulled in by ensure() for far-off SV/large-indel breakpoints (Java's
     // additional reference-map windows). Kept sorted and non-overlapping. Empty in the common case,
     // so at()/has() take the primary fast path and never scan this list.

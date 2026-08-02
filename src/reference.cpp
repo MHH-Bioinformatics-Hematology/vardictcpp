@@ -37,6 +37,13 @@ void Reference::fetchWindow(const std::string& chr, int s, int e) {
     seq_ = fetchSeq(chr, s, e);   // s is clamped in place
     loadedStart_ = s;
     loadedChr_ = chr;
+    contigLen_ = fai_ ? faidx_seq_len(fai_, chr.c_str()) : 0;
+    if (contigLen_ < 0) contigLen_ = 0;
+    // Java's ReferenceResource.getReference stores referenceSequences only up to sequenceEnd - SEED_1
+    // unless the loaded window reaches the contig end (len == sequenceEnd). Reproduce that trailing
+    // truncation so has() answers null at the padded window's tail, exactly like ref.get(p) == null.
+    int end = loadedEnd();
+    primaryEffEnd_ = (contigLen_ > 0 && end >= contigLen_) ? end : end - SEED_1;
     seedBuilt_ = false;
 }
 
