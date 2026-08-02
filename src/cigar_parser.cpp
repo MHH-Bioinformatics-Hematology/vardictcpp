@@ -317,7 +317,6 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
         }
 
         out.totalReads++;
-        if (c.l_qseq > out.maxReadLength) out.maxReadLength = c.l_qseq;
 
         // Duplicate detection (optional): same start + cigar seen again.
         if (cfg_.removeDuplicates) {
@@ -349,6 +348,16 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
             int lead = (cigv.front().second == 'S') ? cigv.front().first : 0;
             int tail = (cigv.back().second == 'S') ? cigv.back().first : 0;
             if (lead >= 10 && lead <= 99 && tail >= 10) continue;
+        }
+        // maxReadLength is updated AFTER modifyCigar (CigarParser l.307-309: getSoftClippedLength of
+        // the MODIFIED cigar), so the CigarModifier chimeric-clip check for THIS read sees only the
+        // PREVIOUS reads' max -- a read cannot use its own length to justify dropping its own soft
+        // clip via the `abs(pos - seed) < 2*maxReadLength` gate. Value = M+I+S of the modified cigar.
+        {
+            int solen = 0;
+            for (auto& e : cigv)
+                if (e.second=='M'||e.second=='I'||e.second=='S'||e.second=='='||e.second=='X') solen += e.first;
+            if (solen > out.maxReadLength) out.maxReadLength = solen;
         }
         const int readStart = rpos;  // CigarModifier-adjusted read alignment start (Java's `position`)
 
