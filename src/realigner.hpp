@@ -38,6 +38,13 @@ void adjSNV(VariationData& vd, Reference& ref);
 // clusters (VariationRealigner.filterSV) and must run before realignment; findDELdisc emits the <DEL>
 // breakpoint variations (StructuralVariantsProcessor.findDELdisc) and runs after realignment.
 void filterSVStructures(VariationData& vd, int maxReadLength);
+// StructuralVariantsProcessor.findDEL: split-read-confirmed <DEL> SVs from the discordant DEL clusters'
+// dominant soft clip (findAllSVs runs this FIRST, before findINV/findsv/findDELdisc). Matching the
+// soft-clip consensus locates the exact reciprocal breakpoint; the deletion's coverage is then raised
+// to the far-breakpoint coverage (via `reload`) so a low-VAF SV on a high-coverage locus is AF-filtered.
+// Marks its cluster used so findDELdisc does not re-emit it as a discordant-only estimate.
+void findDEL(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+             int maxReadLength, const SVReloadFn& reload);
 void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 
 // StructuralVariantsProcessor.findINV: pair-assisted <INV> caller over the discordant same-orientation

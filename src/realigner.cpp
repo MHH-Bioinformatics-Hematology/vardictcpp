@@ -1614,6 +1614,190 @@ void filterSVStructures(VariationData& vd, int maxReadLength) {
     filterSVList(vd.svrdup, maxReadLength);
 }
 
+// StructuralVariantsProcessor.findDEL (VarDictJava StructuralVariantsProcessor.java 138-475). For each
+// discordant DEL cluster, take its dominant soft clip, match the clip consensus to the reciprocal
+// breakpoint, build a <DEL> variation there, and raise its coverage to the far breakpoint's coverage so
+// a low-VAF SV over a high-coverage locus is dropped by isGoodVar (as VarDict does). Marks the cluster
+// used so findDELdisc skips it. Only the split-read-confirmed (softp!=0) and near-anchor (no-softp)
+// branches are ported; both mirror the Java control flow exactly.
+void findDEL(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+             int maxReadLength, const SVReloadFn& reload) {
+    if (cfg.disableSV) return;
+    auto& NIV = vd.nonInsertionVariants;
+
+    // Synthetic pair-support Variation folded into the deletion (Java builds `tv` from del: half fwd,
+    // half rev, quality scaled by mcnt/varsCount; here mcnt==varsCount so the scale is identity).
+    auto buildTv = [](const Sclip& del, int mcnt) {
+        Variation tv;
+        tv.varsCount = mcnt; tv.highQualityReadsCount = mcnt;
+        tv.varsCountOnForward = mcnt / 2; tv.varsCountOnReverse = mcnt - mcnt / 2;
+        tv.meanQuality = del.meanQuality * mcnt / del.varsCount;
+        tv.meanPosition = del.meanPosition * mcnt / del.varsCount;
+        tv.meanMappingQuality = del.meanMappingQuality * mcnt / del.varsCount;
+        tv.numberOfMismatches = del.numberOfMismatches * mcnt / del.varsCount;
+        return tv;
+    };
+    auto dominantSoftp = [](const Sclip& del) {
+        int softp = 0, bestc = -1;
+        for (auto& [p, cnt] : del.soft) if (cnt > bestc) { bestc = cnt; softp = p; }
+        return softp;
+    };
+
+    // Forward DEL clusters (svfdel): reads anchor left, mates map far right; the 3' soft clip carries the
+    // post-deletion (right-flank) sequence, matched forward (dir=1).
+    for (Sclip& del : vd.svfdel) {
+        if (del.used) continue;
+        if (del.varsCount < cfg.minReads) continue;
+        int softp = dominantSoftp(del);
+        if (softp != 0) {
+            auto it = vd.softClips3End.find(softp);
+            if (it == vd.softClips3End.end()) continue;
+            Sclip& scv = it->second;
+            if (scv.used) continue;
+            std::string seq = findconseq(scv);
+            if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
+            if (!(ref.has(del.mstart) && ref.has(del.mend))) {
+                ref.ensure(del.mstart - 500, del.mend + 500, cfg.numberNucleotideToExtend + 500);
+                reload(del.mstart, del.mend);
+            }
+            Match m = findMatch(seq, ref, softp, 1, Reference::SEED_1, 3);
+            int bp = m.bp;
+            if (bp == 0) continue;
+            if (!(bp - softp > 30 && isOverlapSV(softp, bp, del.end, del.mstart, maxReadLength))) continue;
+            bp--;
+            int dellen = bp - softp + 1;
+            const auto& refseqs = ref;
+            while (refseqs.has(bp) && refseqs.has(softp - 1) && refseqs.at(bp) == refseqs.at(softp - 1)) {
+                bp--; if (bp != 0) softp--;
+            }
+            Variation& vref = getVariation(NIV, softp, "-" + std::to_string(dellen));
+            vref.varsCount = 0;
+            SVInfo& sv = vd.svInfoAt[softp];
+            sv.type = "DEL"; sv.pairs += del.varsCount; sv.splits += scv.varsCount; sv.clusters++;
+            if (!(vd.refCoverage.count(softp) && vd.refCoverage[softp] > del.varsCount))
+                vd.refCoverage[softp] = del.varsCount;
+            if (vd.refCoverage.count(bp) && vd.refCoverage[softp] < vd.refCoverage[bp])
+                vd.refCoverage[softp] = vd.refCoverage[bp];
+            Variation* refVar = ref.has(softp) ? getVariationMaybe(NIV, softp, ref.at(softp)) : nullptr;
+            adjCnt(vref, scv, refVar);
+            Variation tv = buildTv(del, del.varsCount);
+            adjCnt(vref, tv);
+            del.used = true;
+            markSVDel(softp, bp, vd.svrdel, maxReadLength);
+        } else {
+            // Java no-softp branch (StructuralVariantsProcessor 236-238) loads ONLY the reference bases
+            // (getReference) here - NOT the reads (no partialPipeline). Re-reading reads would pollute
+            // maxReadLength / soft clips and perturb the downstream findDELdisc estimate, so ensure the
+            // reference window without a read reload.
+            if (!(ref.has(del.mstart) && ref.has(del.mend)))
+                ref.ensure(del.mstart - 500, del.mend + 500, cfg.numberNucleotideToExtend + 500);
+            for (auto& [i, scvRef] : vd.softClips3End) {
+                Sclip& scv = scvRef;
+                if (scv.used) continue;
+                if (!(i >= del.end - 3 && i - del.end < 3 * maxReadLength)) continue;
+                std::string seq = findconseq(scv);
+                if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
+                softp = i;
+                Match m = findMatch(seq, ref, softp, 1, Reference::SEED_1, 3);
+                int bp = m.bp;
+                if (bp == 0) { m = findMatch(seq, ref, softp, 1, Reference::SEED_2, 0); bp = m.bp; }
+                if (bp == 0) continue;
+                if (!(bp - softp > 30 && isOverlapSV(softp, bp, del.end, del.mstart, maxReadLength))) continue;
+                bp--;
+                int dellen = bp - softp + 1;
+                Variation& vref = getVariation(NIV, softp, "-" + std::to_string(dellen));
+                vref.varsCount = 0;
+                SVInfo& sv = vd.svInfoAt[softp];
+                sv.type = "DEL"; sv.pairs += del.varsCount; sv.splits += scv.varsCount; sv.clusters++;
+                if (!(vd.refCoverage.count(softp) && vd.refCoverage[softp] > del.varsCount))
+                    vd.refCoverage[softp] = del.varsCount;
+                if (vd.refCoverage.count(bp) && vd.refCoverage[softp] < vd.refCoverage[bp])
+                    vd.refCoverage[softp] = vd.refCoverage[bp];
+                adjCnt(vref, scv);
+                Variation tv = buildTv(del, del.varsCount);
+                adjCnt(vref, tv);
+                del.used = true;
+                markSVDel(softp, bp, vd.svrdel, maxReadLength);
+                break;
+            }
+        }
+    }
+
+    // Reverse DEL clusters (svrdel): reads anchor right, mates map far left; the 5' soft clip carries the
+    // pre-deletion (left-flank) sequence, matched on the reverse walk (dir=-1).
+    for (Sclip& del : vd.svrdel) {
+        if (del.used) continue;
+        if (del.varsCount < cfg.minReads) continue;
+        int softp = dominantSoftp(del);
+        if (softp != 0) {
+            auto it = vd.softClips5End.find(softp);
+            if (it == vd.softClips5End.end()) continue;
+            Sclip& scv = it->second;
+            if (scv.used) continue;
+            std::string seq = findconseq(scv);
+            if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
+            if (!(ref.has(del.mstart) && ref.has(del.mend))) {
+                ref.ensure(del.mstart - 500, del.mend + 500, cfg.numberNucleotideToExtend + 500);
+                reload(del.mstart, del.mend);
+            }
+            Match m = findMatch(seq, ref, softp, -1, Reference::SEED_1, 3);
+            int bp = m.bp;
+            if (bp == 0) { m = findMatch(seq, ref, softp, -1, Reference::SEED_2, 0); bp = m.bp; }
+            if (bp == 0) continue;
+            if (!(softp - bp > 30 && isOverlapSV(bp, softp, del.mend, del.start, maxReadLength))) continue;
+            bp++; softp--;
+            int dellen = softp - bp + 1;
+            Variation& vref = getVariation(NIV, bp, "-" + std::to_string(dellen));
+            vref.varsCount = 0;
+            SVInfo& sv = vd.svInfoAt[bp];
+            sv.type = "DEL"; sv.pairs += del.varsCount; sv.splits += scv.varsCount; sv.clusters++;
+            adjCnt(vref, scv);
+            if (!(vd.refCoverage.count(bp) && vd.refCoverage[bp] > del.varsCount))
+                vd.refCoverage[bp] = del.varsCount;
+            if (vd.refCoverage.count(softp) && vd.refCoverage[softp] > vd.refCoverage[bp])
+                vd.refCoverage[bp] = vd.refCoverage[softp];
+            Variation tv = buildTv(del, del.varsCount);
+            adjCnt(vref, tv);
+            del.used = true;
+            markSVDel(bp, softp, vd.svfdel, maxReadLength);
+        } else {
+            // Java no-softp branch (StructuralVariantsProcessor 399-401) loads ONLY the reference bases
+            // (getReference), NOT the reads - see the forward no-softp branch above.
+            if (!(ref.has(del.mstart) && ref.has(del.mend)))
+                ref.ensure(del.mstart - 500, del.mend + 500, cfg.numberNucleotideToExtend + 500);
+            for (auto& [i, scvRef] : vd.softClips5End) {
+                Sclip& scv = scvRef;
+                if (scv.used) continue;
+                if (!(i <= del.start + 3 && del.start - i < 3 * maxReadLength)) continue;
+                std::string seq = findconseq(scv);
+                if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
+                softp = i;
+                Match m = findMatch(seq, ref, softp, -1, Reference::SEED_1, 3);
+                int bp = m.bp;
+                if (bp == 0) { m = findMatch(seq, ref, softp, -1, Reference::SEED_2, 0); bp = m.bp; }
+                if (bp == 0) continue;
+                if (!(softp - bp > 30 && isOverlapSV(bp, softp, del.mend, del.start, maxReadLength))) continue;
+                bp++; softp--;
+                int dellen = softp - bp + 1;
+                Variation& vref = getVariation(NIV, bp, "-" + std::to_string(dellen));
+                vref.varsCount = 0;
+                SVInfo& sv = vd.svInfoAt[bp];
+                sv.type = "DEL"; sv.pairs += del.varsCount; sv.splits += scv.varsCount; sv.clusters++;
+                adjCnt(vref, scv);
+                if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = del.varsCount;
+                if (vd.refCoverage.count(softp) && vd.refCoverage[softp] > vd.refCoverage[bp])
+                    vd.refCoverage[bp] = vd.refCoverage[softp];
+                vd.refCoverage[bp] += scv.varsCount;   // incCnt(refCoverage, bp, scv.varsCount)
+                Variation tv = buildTv(del, del.varsCount);
+                adjCnt(vref, tv);
+                del.used = true;
+                markSVDel(bp, softp, vd.svfdel, maxReadLength);
+                break;
+            }
+        }
+    }
+}
+
 void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
     (void)region;
     auto& NIV = vd.nonInsertionVariants;
