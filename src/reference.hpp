@@ -67,10 +67,23 @@ public:
 
 private:
     void buildSeed() const;
+    void fetchWindow(const std::string& chr, int s, int e);
+    // Record a genuinely-requested window [a,b] (1-based inclusive); returns true if it added coverage.
+    bool addGenuine(int a, int b);
+    // Whether the whole span [a,b] lies inside a single genuinely-loaded window.
+    bool inGenuine(int a, int b) const {
+        for (const auto& iv : genuine_) if (a >= iv.first && b <= iv.second) return true;
+        return false;
+    }
     faidx_t* fai_ = nullptr;
     std::string seq_;
     std::string loadedChr_;
     int loadedStart_ = 1;
+    // Genuinely-requested reference windows (1-based inclusive). ensure() gap-fills seq_ contiguously
+    // for O(1) base lookups, but Java's reference map is a set of DISJOINT windows, so the seed index
+    // must only cover these genuine windows -- otherwise a multi-Mbp gap-fill invents spurious unique
+    // k-mers (e.g. a far-off findMatchRev hit that fabricates an <INV>). See ensure()/buildSeed().
+    std::vector<std::pair<int,int>> genuine_;
     // Seed index is built lazily on first seedUnique() query and invalidated whenever the loaded window
     // changes. Most regions never hit the SV/large-indel realignment paths that consume it.
     mutable bool seedBuilt_ = false;

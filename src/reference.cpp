@@ -18,9 +18,8 @@ Reference::~Reference() {
     if (fai_) fai_destroy(fai_);
 }
 
-void Reference::load(const std::string& chr, int start, int end, int pad) {
-    int s = start - pad; if (s < 1) s = 1;
-    int e = end + pad;
+void Reference::fetchWindow(const std::string& chr, int s, int e) {
+    if (s < 1) s = 1;
     int len = 0;
     // faidx_fetch_seq is 0-based, end-inclusive.
     char* raw = faidx_fetch_seq(fai_, chr.c_str(), s - 1, e - 1, &len);
@@ -28,6 +27,7 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
         // Region outside contig / not found: leave empty so at() returns 'N'.
         seq_.clear();
         loadedStart_ = s;
+        loadedChr_ = chr;
         seedBuilt_ = false;
         if (raw) free(raw);
         return;
@@ -42,12 +42,37 @@ void Reference::load(const std::string& chr, int start, int end, int pad) {
     free(raw);
 }
 
+bool Reference::addGenuine(int a, int b) {
+    if (a < 1) a = 1;
+    if (b < a) return false;
+    if (inGenuine(a, b)) return false;
+    genuine_.emplace_back(a, b);
+    return true;
+}
+
+void Reference::load(const std::string& chr, int start, int end, int pad) {
+    int s = start - pad; if (s < 1) s = 1;
+    int e = end + pad;
+    fetchWindow(chr, s, e);
+    // A fresh region load starts a new set of genuine windows: exactly the loaded span.
+    genuine_.clear();
+    genuine_.emplace_back(loadedStart_, loadedEnd());
+}
+
 void Reference::ensure(int start, int end) {
     if (loadedChr_.empty()) return;
-    if (start >= loadedStart_ && end <= loadedEnd()) return; // already covered
+    bool covered = (start >= loadedStart_ && end <= loadedEnd());
+    // Record the genuinely-requested window (Java loads it as a separate reference-map window). Only
+    // this window is seed-indexed; the contiguous gap-fill below is for base lookups only.
+    bool added = addGenuine(start, end);
+    if (covered) { if (added) seedBuilt_ = false; return; }
     int s = std::min(start, loadedStart_); if (s < 1) s = 1;
     int e = std::max(end, loadedEnd());
-    load(loadedChr_, s, e, 0);
+    // Preserve the genuine windows across the contiguous re-fetch (load() would reset them).
+    std::vector<std::pair<int,int>> keep = genuine_;
+    fetchWindow(loadedChr_, s, e);
+    genuine_ = std::move(keep);
+    addGenuine(start, end);
 }
 
 void Reference::buildSeed() const {
@@ -66,19 +91,27 @@ void Reference::buildSeed() const {
     std::vector<unsigned char> code((size_t)n);
     simd::encode_bases(s, code.data(), (size_t)n);
 
+    // Fast path for the common single-window load: the whole seq_ is genuine, so index every position
+    // (byte-identical to before). When ensure() created disjoint windows, skip any k-mer that spans a
+    // gap so the index matches Java's sparse reference map.
+    const bool fullGenuine = genuine_.size() == 1
+                             && genuine_[0].first <= loadedStart_ && genuine_[0].second >= loadedEnd();
+
     auto build = [&](int k, std::unordered_map<uint64_t, int>& m) {
         if (n < k) return;
         const uint64_t lowMask = (1ULL << (3 * (k - 1))) - 1; // keeps all but the top base before shift
         uint64_t enc = 0;
         for (int j = 0; j < k; ++j) enc = (enc << 3) | code[j];  // first window == encodeKmer(s, k)
-        {
-            auto r = m.emplace(enc, 0 + loadedStart_);
+        auto tryEmplace = [&](int i) {
+            int pos = i + loadedStart_;
+            if (!fullGenuine && !inGenuine(pos, pos + k - 1)) return;
+            auto r = m.emplace(enc, pos);
             if (!r.second) r.first->second = 0;
-        }
+        };
+        tryEmplace(0);
         for (int i = 1; i + k <= n; ++i) {
             enc = ((enc & lowMask) << 3) | code[i + k - 1];     // drop oldest base, append the new one
-            auto r = m.emplace(enc, i + loadedStart_);
-            if (!r.second) r.first->second = 0;
+            tryEmplace(i);
         }
     };
     build(SEED_1, seed17_);
