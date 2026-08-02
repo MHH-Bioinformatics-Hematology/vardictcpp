@@ -232,15 +232,23 @@ sample** (230 s → 14.4 s).
 **`CigarModifier` is ported and enabled.** It runs on every read at the top of `parseCigar` (gated on
 `-k`, VarDict's default), reshaping CIGARs before counting: leading/trailing D/I normalization,
 chimeric-seed clip removal, `captureMisSoftlyMS`/`captureMisSoftly3Mismatches`,
-`combineDigSDigM`/`combineBeginDigM`, and the indel-collapse loop. On the curated goldens this makes
-output byte-identical (0 FP / 0 FN). On noisy real WES a small residual of the hardest CIGAR-rewrite and
-distributed-coverage edge cases remains — a handful of FP/FN per sample (e.g. 5 FP / 10 FN out of ~16k;
-see [bench/equivalence_sra_wes.md](bench/equivalence_sra_wes.md)).
+`combineDigSDigM`/`combineBeginDigM`, and the indel-collapse loop, including the `rn==0` backward
+mismatch scan that positions the soft-clip consensus exactly as Java does. Output is byte-identical to
+Java (0 FP / 0 FN) on the curated goldens and on the two whole-exome samples verified end-to-end (see
+below).
 
 **Ported & enabled:** CIGAR parse (+ `CigarModifier`) → MNV/MNP → soft-clip → full small + large indel
-realignment → structural variants (split-read `<INV>` via `findsv`, discordant-pair `<DEL>` via
-`findDELdisc`, `filterSVStructures` clustering) → call/format, in **simple**, **amplicon** (`-a`),
-**`--fisher`**, and **paired somatic** modes.
+realignment → structural variants (split-read + pair-assisted `<INV>` via `findsv`/`findINV`,
+discordant-pair `<DEL>` via `findDELdisc`, tandem-duplication `<DUP>` via `markDUPSV`, `filterSVStructures`
+clustering) → call/format, in **simple**, **amplicon** (`-a`), **`--fisher`**, and **paired somatic** modes.
+
+**Whole-exome parity: byte-identical to Java.** Verified end-to-end on two public WES samples against
+single-threaded VarDict-Java 1.8.3: **SRR15006386 4014/4014** and **SRR15006375 4056/4056**, zero
+differing lines. Closing the last rows drove the full `<INV>`/`<DUP>` subsystems, large-indel coverage
+reloads, discordant-pair cluster merging, and a sparse-seed fix (stops fabricating far-off inversions).
+Every residual divergence was triaged for *correctness* against both Java and the original Perl VarDict:
+each proved to be a cpp bug fixed toward the reference, so no deliberate divergences were needed. (Other
+WES samples are not yet exhaustively verified; new data may surface further edge cases.)
 
 **Paired somatic** (`-b 'tumor|normal'`) runs the full pipeline on both BAMs and compares them
 (`SomaticMode` + `SomaticPostProcessModule`: `accept` / `callingForBothSamples` / `callingForOneSample`
@@ -249,11 +257,6 @@ realignment → structural variants (split-read `<INV>` via `findsv`, discordant
 to Java. `combineAnalysis` (the merged `bam1+bam2` re-run that keeps a low-coverage long indel from
 becoming a false somatic call) is ported and verified on a fixture that provably triggers it (byte-
 identical to Java, confirmed firing via VarDict's `-y` trace).
-
-**Genuinely remaining:**
-
-- The handful of WES edge-case FP/FN noted above (hardest CIGAR-rewrite / distributed-coverage
-  positions, e.g. the `TCC>ACG` Depth 46 vs 35 distributed-indel coverage).
 
 **Splice** junctions are handled: an `N` CIGAR op records its intron span, and `isGoodVar` rejects a
 `Deletion` whose coordinates match a junction (verified against Java on a synthetic spliced fixture —

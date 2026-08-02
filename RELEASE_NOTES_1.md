@@ -32,10 +32,14 @@ base × allele, where the native implementation stays flat instead of scaling in
 ## Correctness
 - **Simple mode is byte-identical** to VarDictJava 1.8.3 on the curated golden (0 FP / 0 FN), enforced
   in CI on every push (gcc + clang; the CI parity test covers simple mode).
-- On noisy real whole-exome data, **~95% of variant rows are byte-identical**, with a small residual of
-  a few dozen discordant calls per sample (tens of FP/FN out of 16k–54k) in the known edge-case classes
-  (structural / large-indel representation, distributed indel coverage, homopolymer/MNV). These are not
-  yet zero on full WES; the curated-golden parity is exact.
+- On real whole-exome data, **byte-identical to Java** on the two samples verified end-to-end:
+  SRR15006386 (4014/4014 rows) and SRR15006375 (4056/4056), zero differing lines vs single-threaded
+  VarDict-Java 1.8.3. Reaching this closed the former residual classes — the `<INV>` and `<DUP>`
+  structural-variant subsystems, large-indel/insertion coverage reloads, discordant-pair cluster
+  merging, the CigarModifier soft-clip position, and a sparse-seed fix that stopped fabricating far-off
+  inversions. Divergences were triaged for *correctness*, not blind parity: every one proved to be a
+  cpp bug fixed toward Java/Perl (no upstream-bug divergences were needed). Other WES samples are not
+  yet exhaustively verified; new data may surface further edge cases.
 
 ## Build & test
 - Requires a C++17 compiler, CMake ≥ 3.15, and htslib:
@@ -47,7 +51,7 @@ base × allele, where the native implementation stays flat instead of scaling in
 - **Paired somatic** runs the pipeline on both BAMs and compares them, **byte-identical to Java** on the
   test tumor|normal pair (all 56 rows), including `combineAnalysis` (the merged `bam1+bam2` refinement),
   verified on a fixture that provably triggers it.
-- Real-WES parity is ~95% byte-identical (see Correctness); the remaining SV/large-indel/coverage edge
-  cases are the roadmap.
+- Real-WES parity is byte-identical on the two verified samples (see Correctness); other samples are not
+  yet exhaustively verified.
 - Splice junctions are handled (N-op intron spans reject splice-junction deletions in isGoodVar,
   verified against Java on a synthetic spliced fixture).
