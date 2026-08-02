@@ -18,20 +18,29 @@ public:
     // Load reference window for [start,end] (1-based) with `pad` extra bases on each side.
     void load(const std::string& chr, int start, int end, int pad);
 
-    // Ensure [start,end] (1-based inclusive) is covered by the loaded window, expanding the loaded
-    // seq to the union [min(start,loadedStart), max(end,loadedEnd)] if needed. Mirrors VarDict's
-    // ReferenceResource.getReference merging additional windows into referenceSequences (used by the
-    // SV path to pull in a far-off deletion breakpoint outside the region window).
-    void ensure(int start, int end);
+    // Ensure [start,end] (1-based inclusive) is covered by the reference, loading a SEPARATE small
+    // window [start-pad, end+pad] (matching Java's getReference(modifiedRegion, extension) window,
+    // pad = numberNucleotideToExtend + extension) as a DISJOINT segment if [start,end] is not already
+    // covered. Mirrors VarDict's ReferenceResource.getReference adding another window to the reference
+    // map: Java stores the reference as disjoint [start,end] segments, NOT one contiguous span, so the
+    // far-off SV/large-indel breakpoint pulls in only its own small window instead of gap-filling every
+    // base between the region and the breakpoint (which could be multiple Mbp -> multi-GB per thread).
+    void ensure(int start, int end, int pad);
 
-    // 1-based reference base at position p (uppercase); returns 'N' if outside the loaded window.
+    // 1-based reference base at position p (uppercase); returns 'N' if outside all loaded windows.
     char at(int p) const {
         int i = p - loadedStart_;
-        if (i < 0 || i >= (int)seq_.size()) return 'N';
-        return seq_[i];
+        if (i >= 0 && i < (int)seq_.size()) return seq_[i];   // primary window fast path
+        if (extra_.empty()) return 'N';
+        return atExtra(p);
     }
-    // Whether position p is within the loaded window (mirrors ref.get(p) != null).
-    bool has(int p) const { int i = p - loadedStart_; return i >= 0 && i < (int)seq_.size(); }
+    // Whether position p is within any loaded window (mirrors ref.get(p) != null).
+    bool has(int p) const {
+        int i = p - loadedStart_;
+        if (i >= 0 && i < (int)seq_.size()) return true;      // primary window fast path
+        if (extra_.empty()) return false;
+        return hasExtra(p);
+    }
     // Whether the FASTA index contains a sequence named `name` (used to catch chromosome-naming
     // mismatches such as "chr7" vs "7" before a run silently produces no calls).
     bool hasContig(const std::string& name) const { return fai_ && faidx_has_seq(fai_, name.c_str()); }
@@ -66,8 +75,32 @@ public:
     static constexpr int SEED_2 = 12;
 
 private:
+    // A disjoint reference segment loaded by ensure() (1-based, `start` is its first position).
+    struct Segment { int start; std::string seq; };
     void buildSeed() const;
+    void buildSeedDisjoint() const;   // seed build for the multi-window (post-ensure) case
     void fetchWindow(const std::string& chr, int s, int e);
+    // Fetch [s,e] (1-based, s clamped to 1, e clamped to contig by faidx) uppercased; returns the
+    // bases and sets `s` to the clamped start. Empty string if outside the contig.
+    std::string fetchSeq(const std::string& chr, int& s, int e) const;
+    // Slow-path base/coverage lookup in the disjoint extra segments (only reached off the primary
+    // window fast path, i.e. positions the SV/large-indel realignment pulled in far from the region).
+    char atExtra(int p) const {
+        for (const auto& sg : extra_) { int i = p - sg.start; if (i >= 0 && i < (int)sg.seq.size()) return sg.seq[i]; }
+        return 'N';
+    }
+    bool hasExtra(int p) const {
+        for (const auto& sg : extra_) { int i = p - sg.start; if (i >= 0 && i < (int)sg.seq.size()) return true; }
+        return false;
+    }
+    // Whether [a,b] lies fully inside one already-loaded extra segment.
+    bool inExtra(int a, int b) const {
+        for (const auto& sg : extra_) if (a >= sg.start && b <= sg.start + (int)sg.seq.size() - 1) return true;
+        return false;
+    }
+    // Add a freshly-fetched segment [s, s+seq.size()-1], merging it with any overlapping/adjacent
+    // existing extra segments so the extra list stays a set of disjoint, position-sorted windows.
+    void addSegment(int s, std::string&& seq);
     // Record a genuinely-requested window [a,b] (1-based inclusive); returns true if it added coverage.
     bool addGenuine(int a, int b);
     // Whether the whole span [a,b] lies inside a single genuinely-loaded window.
@@ -76,13 +109,17 @@ private:
         return false;
     }
     faidx_t* fai_ = nullptr;
-    std::string seq_;
+    std::string seq_;            // primary window loaded by load() (the region + padding)
     std::string loadedChr_;
-    int loadedStart_ = 1;
-    // Genuinely-requested reference windows (1-based inclusive). ensure() gap-fills seq_ contiguously
-    // for O(1) base lookups, but Java's reference map is a set of DISJOINT windows, so the seed index
-    // must only cover these genuine windows -- otherwise a multi-Mbp gap-fill invents spurious unique
-    // k-mers (e.g. a far-off findMatchRev hit that fabricates an <INV>). See ensure()/buildSeed().
+    int loadedStart_ = 1;        // 1-based first position of seq_ (the primary window)
+    // Extra DISJOINT windows pulled in by ensure() for far-off SV/large-indel breakpoints (Java's
+    // additional reference-map windows). Kept sorted and non-overlapping. Empty in the common case,
+    // so at()/has() take the primary fast path and never scan this list.
+    std::vector<Segment> extra_;
+    // Genuinely-requested reference windows (1-based inclusive): the primary window plus each ensure()
+    // [start,end]. Java's reference map is a set of DISJOINT windows, so the seed index must only cover
+    // these genuine windows -- otherwise indexing padding/other segments invents spurious unique k-mers
+    // (e.g. a far-off findMatchRev hit that fabricates an <INV>). See ensure()/buildSeed().
     std::vector<std::pair<int,int>> genuine_;
     // Seed index is built lazily on first seedUnique() query and invalidated whenever the loaded window
     // changes. Most regions never hit the SV/large-indel realignment paths that consume it.

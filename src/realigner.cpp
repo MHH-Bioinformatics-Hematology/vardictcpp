@@ -1632,7 +1632,7 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
         if (!(mlen > 0 && mlen > MINDIST)) continue;
         int bp = del.end + (maxReadLength / (del.varsCount + 1)) / 2;
         if (del.softp != 0) bp = del.softp;
-        ref.ensure(bp - 150, bp + 150);
+        ref.ensure(bp - 150, bp + 150, cfg.numberNucleotideToExtend + maxReadLength);
         Variation& vref = getVariation(NIV, bp, "-" + std::to_string(mlen));
         vref.varsCount = 0;
         SVInfo& sv = vd.svInfoAt[bp];
@@ -1657,7 +1657,7 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
         int mlen = del.start - del.mend - maxReadLength / (del.varsCount + 1);
         if (!(mlen > 0 && mlen > MINDIST)) continue;
         int bp = del.mend + (maxReadLength / (del.varsCount + 1)) / 2;
-        ref.ensure(bp - 150, bp + 150);
+        ref.ensure(bp - 150, bp + 150, cfg.numberNucleotideToExtend + maxReadLength);
         Variation& vr = getVariation(NIV, bp, "-" + std::to_string(mlen));
         vr.varsCount = 0;
         SVInfo& sv = vd.svInfoAt[bp];
@@ -1673,7 +1673,7 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
         if (vd.refCoverage.count(del.start) && vd.refCoverage[bp] < vd.refCoverage[del.start])
             vd.refCoverage[bp] = vd.refCoverage[del.start];
         del.used = true;
-        ref.ensure(del.mstart - 100, del.mend + 100);
+        ref.ensure(del.mstart - 100, del.mend + 100, cfg.numberNucleotideToExtend + 200);
         markSVDel(del.mend, del.start, vd.svfdel, maxReadLength);
     }
 }
@@ -1703,7 +1703,7 @@ static void findINVsub(std::vector<Sclip>& svref, int dir, int side,
         // locus is AF-filtered exactly as in VarDict (without it, its Depth collapses to the alt count
         // and it is emitted as a false positive).
         if (!(ref.has(inv.mstart) && ref.has(inv.mend))) {
-            ref.ensure(inv.mstart - 500, inv.mend + 500);
+            ref.ensure(inv.mstart - 500, inv.mend + 500, cfg.numberNucleotideToExtend + 500);
             reload(inv.mstart, inv.mend);
         }
 
