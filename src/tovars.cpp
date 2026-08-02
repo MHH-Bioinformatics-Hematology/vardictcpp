@@ -468,12 +468,25 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                     // not called for SVs, so shift3/MSI stay 0).
                     var.varallele = "<DEL>";
                     var.refallele = ref.has(var.startPosition) ? std::string(1, ref.at(var.startPosition)) : "";
-                    int tpc = var.totalPosCoverage;
-                    auto cprev = vd.refCoverage.find(var.startPosition - 1);
-                    if (cprev != vd.refCoverage.end()) tpc = cprev->second;
-                    if (v.varsCount > tpc) tpc = v.varsCount;
-                    var.totalPosCoverage = tpc;
-                    var.frequency = tpc > 0 ? (double)v.varsCount / tpc : 0;
+                    // ToVarsBuilder 796-802 / vardict.pl 2330-2334: the <DEL> depth reset to
+                    // refCoverage[startPosition-1] (and the positionCoverage clamp + frequency recompute)
+                    // lives INSIDE the AMP_ATGC ('&[ATGC]+') match block, so it applies ONLY to a
+                    // matched-sequence deletion ("-N&ATGC"). A plain structural deletion keeps
+                    // totalPosCoverage = refCoverage[position] and the frequency computed above.
+                    bool ampMatch = false;
+                    { auto a = allele.find('&');
+                      if (a != std::string::npos && a + 1 < allele.size()) {
+                          char c = allele[a + 1];
+                          ampMatch = (c == 'A' || c == 'T' || c == 'G' || c == 'C');
+                      } }
+                    if (ampMatch) {
+                        int tpc = var.totalPosCoverage;
+                        auto cprev = vd.refCoverage.find(var.startPosition - 1);
+                        if (cprev != vd.refCoverage.end()) tpc = cprev->second;
+                        if (v.varsCount > tpc) tpc = v.varsCount;
+                        var.totalPosCoverage = tpc;
+                        var.frequency = tpc > 0 ? (double)v.varsCount / tpc : 0;
+                    }
                 } else {
                     // proceedVrefIsDeletion: MSI over deleted unit vs flanks (leftseq = ref[p-70..p-1],
                     // tseq = ref[p..p+dl+70]; findMSI(tseq[0..dl), tseq[dl..], leftseq) vs without-left).
@@ -929,12 +942,25 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 if (dl >= cfg.SVMINLEN) {
                     var.varallele = "<DEL>";
                     var.refallele = ref.has(var.startPosition) ? std::string(1, ref.at(var.startPosition)) : "";
-                    int tpc = var.totalPosCoverage;
-                    auto cprev = vd.refCoverage.find(var.startPosition - 1);
-                    if (cprev != vd.refCoverage.end()) tpc = cprev->second;
-                    if (v.varsCount > tpc) tpc = v.varsCount;
-                    var.totalPosCoverage = tpc;
-                    var.frequency = tpc > 0 ? (double)v.varsCount / tpc : 0;
+                    // ToVarsBuilder 796-802 / vardict.pl 2330-2334: the <DEL> depth reset to
+                    // refCoverage[startPosition-1] (and the positionCoverage clamp + frequency recompute)
+                    // lives INSIDE the AMP_ATGC ('&[ATGC]+') match block, so it applies ONLY to a
+                    // matched-sequence deletion ("-N&ATGC"). A plain structural deletion keeps
+                    // totalPosCoverage = refCoverage[position] and the frequency computed above.
+                    bool ampMatch = false;
+                    { auto a = allele.find('&');
+                      if (a != std::string::npos && a + 1 < allele.size()) {
+                          char c = allele[a + 1];
+                          ampMatch = (c == 'A' || c == 'T' || c == 'G' || c == 'C');
+                      } }
+                    if (ampMatch) {
+                        int tpc = var.totalPosCoverage;
+                        auto cprev = vd.refCoverage.find(var.startPosition - 1);
+                        if (cprev != vd.refCoverage.end()) tpc = cprev->second;
+                        if (v.varsCount > tpc) tpc = v.varsCount;
+                        var.totalPosCoverage = tpc;
+                        var.frequency = tpc > 0 ? (double)v.varsCount / tpc : 0;
+                    }
                 } else {
                     std::string leftseq, tseq;
                     for (int q = std::max(position - 70, 1); q <= position - 1; ++q) if (ref.has(q)) leftseq += ref.at(q);
