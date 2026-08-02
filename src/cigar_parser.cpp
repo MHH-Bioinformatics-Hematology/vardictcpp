@@ -562,6 +562,11 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
                 }
                 carryOffset = 0;
                 if (moffset != 0) { carryOffset = moffset; qpos += moffset; rpos += moffset; rpe += moffset; }
+                // CigarParser: once a matched segment walks the reference cursor past region.end, stop
+                // processing the rest of the read (Java: `if (start > region.end) break;`, only after an
+                // M segment). Otherwise a trailing indel/soft-clip whose anchor lands exactly on
+                // region.end is recorded here though Java never reaches it.
+                if (rpos > rhi) k = (uint32_t)cigv.size();
                 break;
             }
             case 'I': {
