@@ -744,34 +744,60 @@ static void realignOneDel(VariationData& vd, Reference& ref, const Config& cfg, 
         // BEGIN_MINUS_NUMBER: dellen. Complex deletions "-N&ss"/"-N^ins"/"-N#seg^M" carry a tail that
         // shifts the 5'/3' flanking sequences used for soft-clip re-matching, so a complex deletion
         // does NOT scoop the soft-clip that belongs to the plain "-N" (VariationRealigner realigndel).
+        //   MINUS_NUMBER_ATGNC_SV_ATGNC_END  inversion "-N^<inv5><SVtag><inv3>" -> wupseq/sanpseq are
+        //                                    the inversion flanks (inv3/inv5), extra/extrains stay empty
         //   BEGIN_MINUS_NUMBER_ANY  extra    = tail after "-<dellen>", with ^,&,# stripped
         //   CARET_ATGNC             extrains = ATGNC run following the first '^'
         //   UP_NUMBER_END           dellen  += trailing "^<digits>"
         if (vn.empty() || vn[0] != '-') return;
         int dellen = std::atoi(vn.c_str() + 1);
-        std::string extra, extrains;
+        std::string extra, extrains, inv5, inv3;
         {
             size_t di = 1; while (di < vn.size() && isdigit((unsigned char)vn[di])) di++;
             std::string rest = vn.substr(di);
-            for (char ch : rest) if (ch != '^' && ch != '&' && ch != '#') extra += ch;
-            auto cp = rest.find('^');
-            if (cp != std::string::npos)
-                for (size_t z = cp + 1; z < rest.size(); ++z) {
-                    char c = rest[z];
-                    if (c=='A'||c=='T'||c=='G'||c=='N'||c=='C') extrains += c; else break;
+            auto isATGNC = [](char c){ return c=='A'||c=='T'||c=='G'||c=='N'||c=='C'; };
+            // UP_NUMBER_END (Java runs unconditionally): dellen += trailing "^<digits>".
+            {
+                auto up = rest.rfind('^');
+                if (up != std::string::npos && up + 1 < rest.size()) {
+                    bool allDig = true;
+                    for (size_t z = up + 1; z < rest.size(); ++z) if (!isdigit((unsigned char)rest[z])) { allDig = false; break; }
+                    if (allDig) dellen += std::atoi(rest.c_str() + up + 1);
                 }
-            auto up = rest.rfind('^');
-            if (up != std::string::npos && up + 1 < rest.size()) {
-                bool allDig = true;
-                for (size_t z = up + 1; z < rest.size(); ++z) if (!isdigit((unsigned char)rest[z])) { allDig = false; break; }
-                if (allDig) dellen += std::atoi(rest.c_str() + up + 1);
+            }
+            // MINUS_NUMBER_ATGNC_SV_ATGNC_END: "^-\d+\^([ATGNC]+)<...\d+>([ATGNC]+)$" (inversion).
+            // rest = "^<inv5><SVtag><inv3>": '^', ATGNC run, "<"+3 chars+digits+">", ATGNC run to end.
+            bool isInv = false;
+            if (!rest.empty() && rest[0] == '^') {
+                size_t z = 1; std::string a;
+                while (z < rest.size() && isATGNC(rest[z])) a += rest[z++];
+                if (!a.empty() && z < rest.size() && rest[z] == '<' && z + 4 <= rest.size()) {
+                    size_t d = z + 4;                         // skip '<' + 3 (any) chars
+                    std::string digs;
+                    while (d < rest.size() && isdigit((unsigned char)rest[d])) digs += rest[d++];
+                    if (!digs.empty() && d < rest.size() && rest[d] == '>') {
+                        size_t e = d + 1; std::string b;
+                        while (e < rest.size() && isATGNC(rest[e])) b += rest[e++];
+                        if (!b.empty() && e == rest.size()) { inv5 = a; inv3 = b; isInv = true; }
+                    }
+                }
+            }
+            if (!isInv) {   // BEGIN_MINUS_NUMBER_ANY extra + CARET_ATGNC extrains
+                for (char ch : rest) if (ch != '^' && ch != '&' && ch != '#') extra += ch;
+                auto cp = rest.find('^');
+                if (cp != std::string::npos)
+                    for (size_t z = cp + 1; z < rest.size(); ++z) {
+                        if (isATGNC(rest[z])) extrains += rest[z]; else break;
+                    }
             }
         }
         Variation& vref = getVariation(NIV, p, vn);
         int wustart = p - 200 > 1 ? p - 200 : 1;
         std::string wupseq = joinRef(ref, wustart, p - 1) + extra;
+        if (!inv3.empty()) wupseq = inv3;                     // inversion 3' flank
         int sanend = p + 200;
         std::string sanpseq = extra + joinRef(ref, p + dellen + (int)extra.size() - (int)extrains.size(), sanend);
+        if (!inv5.empty()) sanpseq = inv5;                    // inversion 5' flank
         MismatchResult r3 = findMM3(vd, ref, p, sanpseq);
         MismatchResult r5 = findMM5(vd, ref, p + dellen + (int)extra.size() - (int)extrains.size() - 1, wupseq);
 
