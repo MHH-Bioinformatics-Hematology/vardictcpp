@@ -1627,7 +1627,8 @@ Cluster checkCluster(std::vector<Mate>& mates, int rlen) {
     return res;
 }
 
-void filterSVList(std::vector<Sclip>& list, int maxReadLength) {
+void filterSVList(std::vector<Sclip>& list, int maxReadLength,
+                  std::map<int, std::vector<Sclip*>>* softp2sv) {
     for (auto& sv : list) {
         if (sv.mates.empty()) { sv.used = true; continue; }
         Cluster cl = checkCluster(sv.mates, maxReadLength);
@@ -1646,6 +1647,8 @@ void filterSVList(std::vector<Sclip>& list, int maxReadLength) {
         int bestp = 0, bestc = -1;
         for (auto& [p, cnt] : sv.soft) if (cnt > bestc) { bestc = cnt; bestp = p; }
         sv.softp = sv.soft.empty() ? 0 : bestp;
+        // VariationRealigner.filterSV (l.201-205): register this cluster under its dominant soft clip.
+        if (softp2sv && sv.softp != 0) (*softp2sv)[sv.softp].push_back(&sv);
     }
 }
 
@@ -1661,16 +1664,26 @@ void markSVDel(int start, int end, std::vector<Sclip>& list, int rlen) {
 } // anonymous namespace
 
 void filterSVStructures(VariationData& vd, int maxReadLength) {
-    // Java filterAllSVStructures order: INV clusters, then DEL, then DUP. Each list is independent, so
-    // order does not affect results; the INV lists must be collapsed so findINV sees mstart/mend/mlen.
-    filterSVList(vd.svfinv3, maxReadLength);
-    filterSVList(vd.svrinv3, maxReadLength);
-    filterSVList(vd.svfinv5, maxReadLength);
-    filterSVList(vd.svrinv5, maxReadLength);
-    filterSVList(vd.svfdel, maxReadLength);
-    filterSVList(vd.svrdel, maxReadLength);
-    filterSVList(vd.svfdup, maxReadLength);
-    filterSVList(vd.svrdup, maxReadLength);
+    // Java filterAllSVStructures order: INV clusters, then DEL, then DUP. The insertion order into
+    // SOFTP2SV must follow this (each list appends its softp clusters), so it is preserved here.
+    auto& s2sv = vd.SOFTP2SV;
+    filterSVList(vd.svfinv3, maxReadLength, &s2sv);
+    filterSVList(vd.svrinv3, maxReadLength, &s2sv);
+    filterSVList(vd.svfinv5, maxReadLength, &s2sv);
+    filterSVList(vd.svrinv5, maxReadLength, &s2sv);
+    filterSVList(vd.svfdel, maxReadLength, &s2sv);
+    filterSVList(vd.svrdel, maxReadLength, &s2sv);
+    filterSVList(vd.svfdup, maxReadLength, &s2sv);
+    filterSVList(vd.svrdup, maxReadLength, &s2sv);
+    // Inter-chromosomal fusion clusters (filterAllSVStructures l.153-158): filtered like the rest so
+    // their dominant soft clips register in SOFTP2SV (the findsv INV-suppression guard reads them).
+    for (auto& [mchr, list] : vd.svffus) filterSVList(list, maxReadLength, &s2sv);
+    for (auto& [mchr, list] : vd.svrfus) filterSVList(list, maxReadLength, &s2sv);
+    // filterAllSVStructures (l.159-164): sort each soft-clip's SV clusters by varsCount descending, so
+    // SOFTP2SV[p][0] is the dominant cluster the findsv guard tests. Stable to match Java's List.sort.
+    for (auto& [p, v] : s2sv)
+        std::stable_sort(v.begin(), v.end(),
+                         [](const Sclip* a, const Sclip* b) { return a->varsCount > b->varsCount; });
 }
 
 // StructuralVariantsProcessor.findDEL (VarDictJava StructuralVariantsProcessor.java 138-475). For each
@@ -2059,6 +2072,9 @@ void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& 
         int cnt5 = t5.count;
         if (cnt5 < cfg.minReads) break;
         if (sc5v.used) continue;
+        // StructuralVariantsProcessor.findsv l.705: skip a soft clip already claimed (used) by the
+        // dominant discordant SV cluster at this position (its SOFTP2SV[p5][0]).
+        if (auto it = vd.SOFTP2SV.find(p5); it != vd.SOFTP2SV.end() && !it->second.empty() && it->second[0]->used) continue;
         std::string seq = findconseq(sc5v);
         if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
         Match match = findMatch(seq, ref, p5, -1, Reference::SEED_1, 3);
@@ -2098,6 +2114,8 @@ void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& 
         int cnt3 = t3.count;
         if (cnt3 < cfg.minReads) break;
         if (sc3v.used) continue;
+        // StructuralVariantsProcessor.findsv l.835: skip a soft clip already claimed by its SV cluster.
+        if (auto it = vd.SOFTP2SV.find(p3); it != vd.SOFTP2SV.end() && !it->second.empty() && it->second[0]->used) continue;
         std::string seq = findconseq(sc3v);
         if (seq.empty() || (int)seq.size() < Reference::SEED_2) continue;
         Match match = findMatch(seq, ref, p3, 1, Reference::SEED_1, 3);

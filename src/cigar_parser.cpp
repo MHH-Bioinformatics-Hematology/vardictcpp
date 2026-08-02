@@ -90,9 +90,9 @@ static void addSVMate(Sclip& sd, int start_s, int end_e, int mateStart_ms, int m
 // DEL feeds findDELdisc, INV feeds findINV. DUP clusters are built only for that disc bookkeeping.
 static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
                                 const std::vector<int>& bqual, int lqseq, bool reverse,
-                                double nm, VariationData& out, const Config& cfg) {
+                                double nm, VariationData& out, const Config& cfg,
+                                bam_hdr_t* hdr) {
     const bam1_core_t& c = b->core;
-    if (c.mtid != c.tid) return; // getMateReferenceName == "=" (same chr); inter-chr not ported
     const int maxRL = out.maxReadLength;
     const double CDIST = Config::MINSVCDIST * maxRL;
     const int MIN_D = 75;
@@ -132,7 +132,45 @@ static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
         if (lst.empty() || startv - fend > cdist) { Sclip sc; sc.varsCount = 0; lst.push_back(sc); }
     };
 
-    if (readDirNum * mateDirNum == -1 && (mlen * readDirNum) > 0 && lqseq > Config::MINMAPBASE) {
+    if (c.mtid != c.tid) {
+        // Inter-chromosomal translocation (CigarParser.java l.2205-2269). Mate on another contig:
+        // build a fusion cluster keyed by the mate chromosome name, then bump the disc count of any
+        // nearby DEL/DUP/INV cluster (<= MINSVPOS). No fusion variant is emitted, but the cluster's
+        // soft clips feed SOFTP2SV so findsv can skip a soft clip claimed by this translocation.
+        if (c.mtid >= 0 && lqseq > Config::MINMAPBASE) {   // mate mapped to a named contig
+            const char* mn = sam_hdr_tid2name(hdr, c.mtid);
+            std::string mchr = mn ? mn : "";
+            if (!mchr.empty()) {
+                if (readDirNum == 1) {
+                    auto it = out.svffus.find(mchr);
+                    if (it == out.svffus.end() || start - out.svfusfend[mchr] > CDIST) {
+                        Sclip sc; sc.varsCount = 0; out.svffus[mchr].push_back(sc);
+                    }
+                    addSVMate(out.svffus[mchr].back(), start, end, mateStart, mend, readDirNum, totalLen,
+                              0, soft3, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                    out.svfusfend[mchr] = end;
+                    out.svffus[mchr].back().disc++;
+                } else {
+                    auto it = out.svrfus.find(mchr);
+                    if (it == out.svrfus.end() || start - out.svfusrend[mchr] > CDIST) {
+                        Sclip sc; sc.varsCount = 0; out.svrfus[mchr].push_back(sc);
+                    }
+                    addSVMate(out.svrfus[mchr].back(), start, end, mateStart, mend, readDirNum, totalLen,
+                              0, soft5, pmean, qAtBase, Qmean, nm, cfg.goodq);
+                    out.svfusrend[mchr] = end;
+                    out.svrfus[mchr].back().disc++;
+                }
+                if (!out.svfdel.empty() && start - out.svdelfend <= Config::MINSVPOS) out.svfdel.back().disc++;
+                if (!out.svrdel.empty() && start - out.svdelrend <= Config::MINSVPOS) out.svrdel.back().disc++;
+                if (!out.svfdup.empty() && start - out.svdupfend <= Config::MINSVPOS) out.svfdup.back().disc++;
+                if (!out.svrdup.empty() && start - out.svduprend <= Config::MINSVPOS) out.svrdup.back().disc++;
+                if (!out.svfinv5.empty() && start - out.svinvfend5 <= Config::MINSVPOS) out.svfinv5.back().disc++;
+                if (!out.svrinv5.empty() && start - out.svinvrend5 <= Config::MINSVPOS) out.svrinv5.back().disc++;
+                if (!out.svfinv3.empty() && start - out.svinvfend3 <= Config::MINSVPOS) out.svfinv3.back().disc++;
+                if (!out.svrinv3.empty() && start - out.svinvrend3 <= Config::MINSVPOS) out.svrinv3.back().disc++;
+            }
+        }
+    } else if (readDirNum * mateDirNum == -1 && (mlen * readDirNum) > 0 && lqseq > Config::MINMAPBASE) {
         // deletion candidate
         mlen = mateStart > start ? (long)mend - start : (long)end - mateStart;
         if (std::labs(mlen) > (long)cfg.INSSIZE + (long)cfg.INSSTDAMT * cfg.INSSTD) {
@@ -371,7 +409,7 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
             bool paired = (c.flag & BAM_FPAIRED) != 0;
             bool mateUnmapped = (c.flag & BAM_FMUNMAP) != 0;
             if (paired && mateUnmapped) { /* potential insertion: not ported */ }
-            else if (c.qual > 10) prepareSVStructures(b, cigv, rpos, bqual, c.l_qseq, reverse, nm, out, cfg_);
+            else if (c.qual > 10) prepareSVStructures(b, cigv, rpos, bqual, c.l_qseq, reverse, nm, out, cfg_, hdr);
         }
 
         int qpos = 0;           // 0-based query offset (includes soft-clip)

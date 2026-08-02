@@ -47,6 +47,7 @@ struct Config {
     static constexpr int SVFLANK = 50;
     static constexpr int MINMAPBASE = 15;   // Configuration.MINMAPBASE
     static constexpr double MINSVCDIST = 1.5; // Configuration.MINSVCDIST
+    static constexpr int MINSVPOS = 25;       // Configuration.MINSVPOS (inter-chr disc-bump distance)
     static constexpr double DISCPAIRQUAL = 35; // Configuration.DISCPAIRQUAL
     int numberNucleotideToExtend = 0; // -x
     int samFilterFlag = 0x504; // -F

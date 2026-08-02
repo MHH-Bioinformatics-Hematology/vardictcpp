@@ -69,7 +69,18 @@ struct VariationData {
     int  svdupfend = 0, svduprend = 0;
     std::vector<Sclip> svfinv5, svrinv5, svfinv3, svrinv3;
     int  svinvfend5 = 0, svinvrend5 = 0, svinvfend3 = 0, svinvrend3 = 0;
+    // Inter-chromosomal (fusion/translocation) discordant-pair clusters, keyed by mate chromosome name
+    // (CigarParser prepareSVStructuresForAnalysis inter-chr branch). No fusion variants are emitted, but
+    // these clusters DO carry soft clips into SOFTP2SV, so findsv can skip a soft clip already claimed by
+    // a translocation cluster (this is how Java suppresses the chr18:18518112 split-read <INV>).
+    std::map<std::string, std::vector<Sclip>> svffus, svrfus;
+    std::map<std::string, int> svfusfend, svfusrend;
     std::map<int, SVInfo> svInfoAt;             // position -> SV marker (pairs/splits/clusters)
+    // StructuralVariantsProcessor.SOFTP2SV: soft-clip position -> the SV clusters whose dominant soft
+    // clip sits there, sorted by varsCount descending (VariationRealigner.filterSV populates it; the
+    // pointers stay valid because the svf*/svr* vectors are not mutated after filterSVStructures). findsv
+    // consults SOFTP2SV[p][0].used to skip a soft clip already claimed by a discordant SV cluster.
+    std::map<int, std::vector<Sclip*>> SOFTP2SV;
     std::set<std::string> splice;               // intron junctions "start-end" from N CIGAR ops
     int  maxReadLength = 0;
     int  chrLen = 0;            // length of the region's contig (for breakpoint bounds)
