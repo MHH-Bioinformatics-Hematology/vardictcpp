@@ -381,7 +381,13 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         for (const auto& [allele, v] : alleleMap) {
             if (allele.size() == 1 && allele[0] == refBase) continue; // skip pure reference
             if (v.varsCount < cfg.minReads) continue;
-            double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
+            // Match ToVarsBuilder.createVariant: the frequency (and extraFrequency) denominator is
+            // ttcov, which is raised to varsCount when the variant is over-covered relative to the
+            // position Depth but that excess is explained by extracnt (adjCnt-injected counts).
+            // Without this, an over-covered complex variant reports AF > 1.0 instead of capping at 1.0.
+            int ttcov = totalCov;
+            if (v.varsCount > totalCov && v.extracnt > 0 && v.varsCount - totalCov < v.extracnt) ttcov = v.varsCount;
+            double af = ttcov > 0 ? (double)v.varsCount / (double)ttcov : 0.0;
 
             Variant var;
             var.startPosition = position;
@@ -401,7 +407,7 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
             var.hicnt = v.highQualityReadsCount;
             var.hicov = hicov;
             var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
-            var.extrafreq = (v.extracnt != 0 && totalCov > 0) ? (double)v.extracnt / totalCov : 0;
+            var.extrafreq = (v.extracnt != 0 && ttcov > 0) ? (double)v.extracnt / ttcov : 0;
             var.qratio = v.lowQualityReadsCount > 0
                        ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                        : (double)v.highQualityReadsCount / 0.5; // hi/lo signal-to-noise
