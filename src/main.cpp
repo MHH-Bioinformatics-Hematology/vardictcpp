@@ -258,7 +258,7 @@ static int run(int argc, char** argv) {
                 realignins(vd, ref, c, region, vd.maxReadLength);
                 realignlgdel(vd, ref, c, region, vd.maxReadLength, reload, {&bam});
                 realignlgins30(vd, ref, c, region, vd.maxReadLength);
-                realignlgins(vd, ref, c, region, vd.maxReadLength, reload);
+                realignlgins(vd, ref, c, region, vd.maxReadLength, reload, {&bam});
                 adjSNV(vd, ref);
                 vars.push_back(buildAmpVars(c, region, vd, ref));
             }
@@ -356,7 +356,7 @@ static int run(int argc, char** argv) {
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength, reload, {&b});
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
-        realignlgins(vd, ref, c, region, vd.maxReadLength, reload);
+        realignlgins(vd, ref, c, region, vd.maxReadLength, reload, {&b});
         // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Ported paths,
         // in Java order: findINV (pair-assisted <INV>), findsv (split-read <INV>), findDELdisc (<DEL>).
         if (!c.disableSV) findDEL(vd, ref, c, region, vd.maxReadLength, reload);
@@ -386,7 +386,7 @@ static int run(int argc, char** argv) {
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength, reload, {&b1, &b2});
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
-        realignlgins(vd, ref, c, region, vd.maxReadLength, reload);
+        realignlgins(vd, ref, c, region, vd.maxReadLength, reload, {&b1, &b2});
         if (!c.disableSV) findDEL(vd, ref, c, region, vd.maxReadLength, reload);
         if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload, {&b1, &b2});
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);

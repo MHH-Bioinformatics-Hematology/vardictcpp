@@ -58,6 +58,6 @@ void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& 
 // for a 5' clip, bi<region.start for a 3' clip), mirroring the partialPipeline reload so a low-VAF
 // duplication/large insertion is AF-filtered instead of pinned at AF=1.0.
 void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
-                  int maxReadLength, const SVReloadFn& reload);
+                  int maxReadLength, const SVReloadFn& reload, const std::vector<BamReader*>& bams);
 
 } // namespace vardict

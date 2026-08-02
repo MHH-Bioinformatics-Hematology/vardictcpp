@@ -1384,7 +1384,7 @@ static SVMark markSV(int start, int end, std::initializer_list<std::vector<Sclip
 }
 
 void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
-                  int maxReadLength, const SVReloadFn& reload) {
+                  int maxReadLength, const SVReloadFn& reload, const std::vector<BamReader*>& bams) {
     auto& NIV = vd.nonInsertionVariants;
     const int EXT = Config::EXTENSION;
     auto collect = [&](std::map<int, Sclip>& clips) {
@@ -1471,6 +1471,19 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             Variation& kref = vd.insertionVariants[bi]["+" + ins];
             auto svit = vd.svInfoAt.find(bi);
             if (svit != vd.svInfoAt.end()) svit->second.splits += kref.varsCount - origCount;
+            // VariationRealigner.realignlgins (1749-1755): a tandem-repeat insertion (rpflag) with no
+            // read spanning the locus as reference (noPassingReads) drains the remaining reference
+            // reads at bi onto the insertion (adjCnt with referenceVar == mref).
+            bool rpflag = true;
+            for (int i = 0; i < (int)ins.size(); i++)
+                if (!(ref.has(bi + 1 + i) && ref.at(bi + 1 + i) == ins[i])) { rpflag = false; break; }
+            Variation* mref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
+            if (rpflag && !bams.empty() && (int)ins.size() >= 5 && (int)ins.size() < maxReadLength - 10
+                    && mref != nullptr && mref->varsCount != 0
+                    && noPassingReads(bams, region.chr, bi, bi + (int)ins.size())
+                    && kref.varsCount > 2 * mref->varsCount) {
+                adjCnt(kref, *mref, mref);
+            }
         }
     }
     // 3' soft-clips
@@ -1545,6 +1558,17 @@ void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Re
             Variation& kref = vd.insertionVariants[bi]["+" + ins];
             auto svit = vd.svInfoAt.find(bi);
             if (svit != vd.svInfoAt.end()) svit->second.splits += kref.varsCount - origCount;
+            // VariationRealigner.realignlgins (1921-1926): tandem-repeat reference drain (see 5' branch).
+            bool rpflag = true;
+            for (int i = 0; i < (int)ins.size(); i++)
+                if (!(ref.has(bi + 1 + i) && ref.at(bi + 1 + i) == ins[i])) { rpflag = false; break; }
+            Variation* mref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
+            if (rpflag && !bams.empty() && (int)ins.size() >= 5 && (int)ins.size() < maxReadLength - 10
+                    && mref != nullptr && mref->varsCount != 0
+                    && noPassingReads(bams, region.chr, bi, bi + (int)ins.size())
+                    && kref.varsCount > 2 * mref->varsCount) {
+                adjCnt(kref, *mref, mref);
+            }
         }
     }
 }
