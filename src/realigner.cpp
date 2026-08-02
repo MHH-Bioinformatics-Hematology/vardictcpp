@@ -10,6 +10,26 @@ namespace vardict {
 
 // ---- small helpers (VariationUtils) -------------------------------------------------------------
 
+// VariationRealigner.addVarFactor: scale every count of a variation by (1 + factor). Used to lift a
+// split-read deletion's counts to the coverage implied by its supporting discordant pairs (svcov).
+static void addVarFactor(Variation& v, double factor) {
+    if (factor < -1) return;
+    v.varsCount += (int)(factor * v.varsCount);
+    v.highQualityReadsCount += (int)(factor * v.highQualityReadsCount);
+    v.lowQualityReadsCount += (int)(factor * v.lowQualityReadsCount);
+    v.meanPosition += factor * v.meanPosition;
+    v.meanQuality += factor * v.meanQuality;
+    v.meanMappingQuality += factor * v.meanMappingQuality;
+    v.numberOfMismatches += factor * v.numberOfMismatches;
+    v.addDir(true, (int)(factor * v.getDir(true)));
+    v.addDir(false, (int)(factor * v.getDir(false)));
+}
+
+// StructuralVariantsProcessor.markSV: mark reciprocal DEL clusters overlapping [start,end] used and
+// return {svcov, clusters, pairs} (defined after isOverlapSV; forward-declared for realignlgdel).
+struct SVMark { int cov; int clusters; int pairs; };
+static SVMark markSV(int start, int end, std::initializer_list<std::vector<Sclip>*> lists, int rlen);
+
 static void correctCnt(Variation& v) {
     if (v.varsCount < 0) v.varsCount = 0;
     if (v.highQualityReadsCount < 0) v.highQualityReadsCount = 0;
@@ -888,8 +908,9 @@ void adjSNV(VariationData& vd, Reference& ref) {
 // ---- realignlgdel (large deletions from soft-clip breakpoints) -----------------------------------
 // Faithful port of VariationRealigner.realignlgdel, including the bp==0 seed-based findMatch fallback
 // and its partialPipeline coverage reload (via `reload`) when the breakpoint lands outside the region.
-// The discordant-pair svcov/markSV bookkeeping is not ported (pairs=clusters=0; splits accumulates the
-// clip count); this only affects the SV_info split/pair columns, not the emitted deletion's AF filter.
+// The bp==0 seed path also ports markSV: it marks the reciprocal discordant DEL clusters used (so
+// findDELdisc will not re-emit them as a separate variation), folds their pairs/clusters into SV_info,
+// and lifts the split-read counts to the discordant-pair coverage (svcov) via addVarFactor.
 
 void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
                   const SVReloadFn& reload, const std::vector<BamReader*>& bams) {
@@ -917,16 +938,20 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
         if (seq.empty() || (int)seq.size() < 7) continue;
         int bp = findbp(seq, p - 5, ref, -1, vd.chrLen, cfg.indelsize);
         std::string EXTRA;
+        int svcov = 0;
         if (bp == 0) {   // findbp failed: try seed-based findMatch (SV-cluster / partialPipeline gated)
             if (islowcomplexseq(seq)) continue;
             Match match = findMatch(seq, ref, p, -1, Reference::SEED_1, 1);
             bp = match.bp; EXTRA = match.extra;
             if (!(bp != 0 && p - bp > 15 && p - bp < Config::SVMAXLEN)) continue;
             bp++;
-            if (cnt <= cfg.minReads) continue; // svcov==0 path (no discordant-pair support)
-            // SV split-read marker (VariationRealigner ~1042-1046). markSV (discordant-pair
-            // clusters) is not ported -> pairs=clusters=0; splits accumulates the clip count.
-            { SVInfo& sv = vd.svInfoAt[bp]; sv.type = "DEL"; sv.splits += cnt; }
+            // markSV (VariationRealigner 1032-1046): mark the reciprocal discordant DEL clusters used
+            // (so findDELdisc doesn't re-emit them as a second variation) and fold their pairs/clusters/
+            // svcov into this deletion.
+            SVMark svm = markSV(bp, p, {&vd.svfdel, &vd.svrdel}, maxReadLength);
+            svcov = svm.cov;
+            if (svm.cov == 0 && cnt <= cfg.minReads) continue; // svcov==0 path (no discordant support)
+            { SVInfo& sv = vd.svInfoAt[bp]; sv.type = "DEL"; sv.pairs += svm.pairs; sv.splits += cnt; sv.clusters += svm.clusters; }
             // partialPipeline reload (VariationRealigner 1048-1061): if the breakpoint lands before
             // the region, re-read coverage at [bp-maxReadLength, min(bp+maxReadLength, region.start-1)]
             // so refCoverage[bp] reflects the true depth and a low-VAF deletion is AF-filtered.
@@ -1000,6 +1025,13 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             auto svit = vd.svInfoAt.find(bp);
             if (svit != vd.svInfoAt.end()) svit->second.splits += newCnt - origCnt;
         }
+        // VariationRealigner l.1181-1183: lift the split-read counts to the discordant-pair coverage.
+        { auto pit3 = NIV.find(bp);
+          if (svcov > 0 && pit3 != NIV.end() && pit3->second.count(gt)) {
+              Variation& tvr = pit3->second[gt];
+              if (svcov > tvr.varsCount && tvr.varsCount > 0)
+                  addVarFactor(tvr, (svcov - tvr.varsCount) / (double)tvr.varsCount);
+          } }
     }
 
     // 3' soft-clipped reads
@@ -1012,15 +1044,18 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
         if (seq.empty() || (int)seq.size() < 7) continue;
         int bp = findbp(seq, p + 5, ref, 1, vd.chrLen, cfg.indelsize);
         std::string EXTRA;
+        int svcov = 0;
         if (bp == 0) {
             if (islowcomplexseq(seq)) continue;
             Match match = findMatch(seq, ref, p, 1, Reference::SEED_1, 1);
             bp = match.bp; EXTRA = match.extra;
             if (!(bp != 0 && bp - p > 15)) continue;
-            if (cnt <= cfg.minReads) continue;
-            // SV split-read marker (VariationRealigner ~1254-1258). markSV not ported ->
-            // pairs=clusters=0; marker is keyed at p (the 3' clip position == variant bp).
-            { SVInfo& sv = vd.svInfoAt[p]; sv.type = "DEL"; sv.splits += cnt; }
+            // markSV (VariationRealigner 1244-1258): mark reciprocal discordant DEL clusters used and
+            // fold their pairs/clusters/svcov in, so findDELdisc doesn't emit a second variation.
+            SVMark svm = markSV(p, bp, {&vd.svfdel, &vd.svrdel}, maxReadLength);
+            svcov = svm.cov;
+            if (svm.cov == 0 && cnt <= cfg.minReads) continue;
+            { SVInfo& sv = vd.svInfoAt[p]; sv.type = "DEL"; sv.pairs += svm.pairs; sv.splits += cnt; sv.clusters += svm.clusters; }
             // partialPipeline reload (VariationRealigner 1260-1273): breakpoint past the region end ->
             // re-read coverage at [max(bp-maxReadLength, region.end+1), bp+maxReadLength].
             if (bp > region.end) {
@@ -1062,6 +1097,13 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             auto svit = vd.svInfoAt.find(bp);
             if (svit != vd.svInfoAt.end()) svit->second.splits += newCnt - origCnt;
         }
+        // VariationRealigner l.1353-1355: lift the split-read counts to the discordant-pair coverage.
+        { auto pit3 = NIV.find(bp);
+          if (svcov > 0 && pit3 != NIV.end() && pit3->second.count(gt)) {
+              Variation& tvr = pit3->second[gt];
+              if (svcov > tvr.varsCount && tvr.varsCount > 0)
+                  addVarFactor(tvr, (svcov - tvr.varsCount) / (double)tvr.varsCount);
+          } }
     }
 }
 
@@ -1286,6 +1328,27 @@ static std::pair<int,int> markDUPSV(int start, int end,
         }
     }
     return {cnt, pairs};
+}
+
+// StructuralVariantsProcessor.markSV: mark reciprocal DEL clusters overlapping [start,end] used;
+// returns {svcov, clusters, pairs}. start2/end2 use the (end/mstart | mend/start) convention.
+static SVMark markSV(int start, int end, std::initializer_list<std::vector<Sclip>*> lists, int rlen) {
+    SVMark r{0, 0, 0};
+    for (auto* lst : lists) {
+        for (auto& sv_r : *lst) {
+            int s2, e2;
+            if (sv_r.start < sv_r.mstart) { s2 = sv_r.end; e2 = sv_r.mstart; }
+            else                          { s2 = sv_r.mend; e2 = sv_r.start; }
+            if (isOverlapSV(start, end, s2, e2, rlen)) {
+                sv_r.used = true;
+                r.clusters++;
+                r.pairs += sv_r.varsCount;
+                if (sv_r.end != sv_r.start)
+                    r.cov += (int)((sv_r.varsCount * (long)rlen) / (sv_r.end - sv_r.start)) + 1;
+            }
+        }
+    }
+    return r;
 }
 
 void realignlgins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
