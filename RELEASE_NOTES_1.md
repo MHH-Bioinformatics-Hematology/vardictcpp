@@ -32,14 +32,17 @@ base × allele, where the native implementation stays flat instead of scaling in
 ## Correctness
 - **Simple mode is byte-identical** to VarDictJava 1.8.3 on the curated golden (0 FP / 0 FN), enforced
   in CI on every push (gcc + clang; the CI parity test covers simple mode).
-- On real whole-exome data, **byte-identical to Java** on the two samples verified end-to-end:
-  SRR15006386 (4014/4014 rows) and SRR15006375 (4056/4056), zero differing lines vs single-threaded
-  VarDict-Java 1.8.3. Reaching this closed the former residual classes — the `<INV>` and `<DUP>`
-  structural-variant subsystems, large-indel/insertion coverage reloads, discordant-pair cluster
-  merging, the CigarModifier soft-clip position, and a sparse-seed fix that stopped fabricating far-off
-  inversions. Divergences were triaged for *correctness*, not blind parity: every one proved to be a
-  cpp bug fixed toward Java/Perl (no upstream-bug divergences were needed). Other WES samples are not
-  yet exhaustively verified; new data may surface further edge cases.
+- On real whole-exome data, **byte-identical to Java on all five samples tested**, zero differing lines
+  vs single-threaded VarDict-Java 1.8.3: SRR15006386 (4014/4014), SRR15006375 (4056/4056), SRR15006376
+  (12739/12739), SRR15006540 (16031/16031), and the 774k-region CCLE run SRR8657348 (54448/54448).
+  Reaching this drove the full structural-variant subsystems (`<INV>`/`<DEL>`/`<DUP>` incl. discordant
+  pairs and inter-chromosomal fusion clusters), large-indel coverage reloads, the reference `SEED_1`
+  extent truncation, and the CigarModifier soft-clip/homopolymer fixes. Divergences were triaged for
+  *correctness* against both Java and the original Perl: every one proved to be a cpp bug fixed toward
+  the reference, so `docs/DIVERGENCES.md` has no open entries. (Other WES samples are not exhaustively
+  verified; new data may surface further edge cases.)
+- **Performance/memory** on those samples: ~3.5–4.7x faster single-core, ~10–12x at 8 threads, and ~14x
+  less peak RAM (77–122 MB vs Java's 1.1–1.7 GB).
 
 ## Build & test
 - Requires a C++17 compiler, CMake ≥ 3.15, and htslib:
@@ -51,7 +54,7 @@ base × allele, where the native implementation stays flat instead of scaling in
 - **Paired somatic** runs the pipeline on both BAMs and compares them, **byte-identical to Java** on the
   test tumor|normal pair (all 56 rows), including `combineAnalysis` (the merged `bam1+bam2` refinement),
   verified on a fixture that provably triggers it.
-- Real-WES parity is byte-identical on the two verified samples (see Correctness); other samples are not
-  yet exhaustively verified.
+- Real-WES parity is byte-identical on all five verified samples (see Correctness); other samples are
+  not exhaustively verified.
 - Splice junctions are handled (N-op intron spans reject splice-junction deletions in isGoodVar,
   verified against Java on a synthetic spliced fixture).

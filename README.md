@@ -242,13 +242,30 @@ realignment → structural variants (split-read + pair-assisted `<INV>` via `fin
 discordant-pair `<DEL>` via `findDELdisc`, tandem-duplication `<DUP>` via `markDUPSV`, `filterSVStructures`
 clustering) → call/format, in **simple**, **amplicon** (`-a`), **`--fisher`**, and **paired somatic** modes.
 
-**Whole-exome parity: byte-identical to Java.** Verified end-to-end on two public WES samples against
-single-threaded VarDict-Java 1.8.3: **SRR15006386 4014/4014** and **SRR15006375 4056/4056**, zero
-differing lines. Closing the last rows drove the full `<INV>`/`<DUP>` subsystems, large-indel coverage
-reloads, discordant-pair cluster merging, and a sparse-seed fix (stops fabricating far-off inversions).
-Every residual divergence was triaged for *correctness* against both Java and the original Perl VarDict:
-each proved to be a cpp bug fixed toward the reference, so no deliberate divergences were needed. (Other
-WES samples are not yet exhaustively verified; new data may surface further edge cases.)
+**Whole-exome parity: byte-identical to Java on all five samples tested.** Verified end-to-end against
+single-threaded VarDict-Java 1.8.3, **zero differing lines** each:
+
+| sample | regions | rows |
+|---|--:|--:|
+| SRR15006386 | 12k | 4014/4014 |
+| SRR15006375 | 12k | 4056/4056 |
+| SRR15006376 | 106k | 12739/12739 |
+| SRR15006540 | 135k | 16031/16031 |
+| SRR8657348 (CCLE) | 774k | 54448/54448 |
+
+Reaching this drove the full structural-variant subsystems — split-read + pair-assisted `<INV>`
+(`findINV`), split-read + discordant `<DEL>` (`findDEL`/`findDELdisc`), tandem-duplication `<DUP>`
+(`markDUPSV`/`findDUPdisc`) including inter-chromosomal fusion clusters and the `SOFTP2SV` guard — plus
+large-indel coverage reloads, the reference `SEED_1` extent truncation, and the CigarModifier
+soft-clip-position and homopolymer-scan fixes. Every residual divergence was triaged for *correctness*
+against both Java and the original Perl VarDict: **each proved to be a cpp bug fixed toward the
+reference**, so `docs/DIVERGENCES.md` has no open entries. (Other WES samples are not exhaustively
+verified; new data may still surface further edge cases.)
+
+**Performance** on these samples (cpp vs Java 1.8.3): **~3.5–4.7x faster single-core, ~10–12x at 8
+threads**, and **~14x less peak RAM** (77–122 MB vs Java's 1.1–1.7 GB) — the reference is stored as
+disjoint windows (like Java's reference map) so a far realignment breakpoint never gap-fills a
+multi-Mbp span.
 
 **Paired somatic** (`-b 'tumor|normal'`) runs the full pipeline on both BAMs and compares them
 (`SomaticMode` + `SomaticPostProcessModule`: `accept` / `callingForBothSamples` / `callingForOneSample`
