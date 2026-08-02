@@ -653,7 +653,11 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
                 int startPos = position, endPos = position;
                 double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
                 std::string g2 = "+" + std::to_string((int)allele.size() - 1);
-                std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : g2;
+                // genotype1 is the position's dominant description (shared with the non-insertion rows,
+                // ToVarsBuilder.collectReferenceVariants genotype1current) -- NOT this insertion's own
+                // length. A non-dominant insertion (e.g. a +5 where a +8 dominates) must still show the
+                // dominant "+8" as genotype1.
+                std::string g1 = positionGenotype1;
                 if (hasDup || !complexIns) {
                     // ToVarsBuilder DUP rendering (lines 690-703): a tandem duplication marked with a
                     // <dupN> tag (realignlgins), or any insertion longer than SVMINLEN, is spelled as
@@ -1056,7 +1060,11 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 int startPos = position, endPos = position;
                 double refFreq = (refVar && totalCov > 0) ? (double)refVar->varsCount / totalCov : 0;
                 std::string g2 = "+" + std::to_string((int)allele.size() - 1);
-                std::string g1 = (refFreq >= freq) ? std::string(1, refBase) : g2;
+                // genotype1 is the position's dominant description (shared with the non-insertion rows,
+                // ToVarsBuilder.collectReferenceVariants genotype1current) -- NOT this insertion's own
+                // length. A non-dominant insertion (e.g. a +5 where a +8 dominates) must still show the
+                // dominant "+8" as genotype1.
+                std::string g1 = positionGenotype1;
                 if (hasDup || !complexIns) {
                     // ToVarsBuilder DUP rendering (lines 690-703): a tandem duplication marked with a
                     // <dupN> tag (realignlgins), or any insertion longer than SVMINLEN, is spelled as
