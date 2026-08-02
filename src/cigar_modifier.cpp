@@ -23,17 +23,20 @@ static void captureMisSoftlyMS(int position, Cig& cig, const std::string& seq, c
     for (int i = 0; i < k - 1; ++i) { if (consumesRef(cig[i].second)) refoff += cig[i].first; if (consumesRead(cig[i].second)) rdoff += cig[i].first; }
     int rn = 0;
     while (rn < soft && refEq(ref, refoff + rn, seq, rdoff + rn) && qual[rdoff + rn] > Config::LOWQUAL) rn++;
-    if (rn > 0) { mch += rn; soft -= rn; }
+    // Java resets rn to 0 here (captureMisSoftlyMS line 430) and the second scan REUSES rn (not a
+    // fresh counter): it therefore rescans from refoff+1, re-testing the base right after the M/S
+    // boundary. Carrying the first scan's rn into the index skips past that base and over-extends.
+    if (rn > 0) { mch += rn; soft -= rn; rn = 0; }
     if (soft > 0) {
-        int rn2 = 0; std::string RN;
-        while (rn2 + 1 < soft && refEq(ref, refoff + rn + rn2 + 1, seq, rdoff + rn + rn2 + 1) && qual[rdoff + rn + rn2 + 1] > Config::LOWQUAL) {
-            rn2++; if (ref.has(refoff + rn + rn2 + 1)) { char c = ref.at(refoff + rn + rn2 + 1); if (RN.find(c) == std::string::npos) RN += c; }
+        std::string RN;
+        while (rn + 1 < soft && refEq(ref, refoff + rn + 1, seq, rdoff + rn + 1) && qual[rdoff + rn + 1] > Config::LOWQUAL) {
+            rn++; if (ref.has(refoff + rn + 1)) { char c = ref.at(refoff + rn + 1); if (RN.find(c) == std::string::npos) RN += c; }
         }
-        if (rn2 > 4 && (int)RN.size() > 1) { mch += rn2 + 1; soft -= rn2 + 1; }
+        if (rn > 4 && (int)RN.size() > 1) { mch += rn + 1; soft -= rn + 1; }
         // Java captureMisSoftlyMS `if (rn == 0)` block: when the forward scan found no match,
         // walk backward from the M/S boundary and soft-clip back to the last mismatch found
         // within a run of <3 consecutive matches (moves the soft-clip start earlier).
-        if (rn2 == 0) {
+        if (rn == 0) {
             int rrn = 0, rmch = 0, rnb = 0;
             while (rrn < mch && rnb < mch) {
                 if (!ref.has(refoff - rrn - 1)) break;
