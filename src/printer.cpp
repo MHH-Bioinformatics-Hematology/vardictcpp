@@ -126,13 +126,17 @@ void appendVariant(std::string& out, const Config& cfg, const Region& region, co
     std::string af    = fmt(v.frequency, "%.4f");
     std::string pmean = fmt(v.pmean, "%.1f");
     std::string qmean = fmt(v.qmean, "%.1f");
-    std::string mq    = fmt(v.mapq, "%.1f");
+    // Java stores meanMappingQuality/numberOfMismatches pre-rounded (ToVarsBuilder roundHalfEven "0.0")
+    // and then prints "0" when that STORED value is 0 (mapq) / not > 0 (nm). cpp keeps the raw mean, so
+    // base the zero test on the rounded value; nonzero values still format the raw mean via %.1f (equal
+    // to formatting the rounded value). Otherwise a tiny-nonzero mean that rounds to 0.0 prints "0.0".
+    std::string mq    = roundHalfEven(1, v.mapq) == 0 ? "0" : fmt(v.mapq, "%.1f");
     std::string sn    = fmt(v.qratio, "%.3f");
     std::string hiaf  = fmt(v.hifreq, "%.4f");
     std::string exaf  = fmt(v.extrafreq, "%.4f");
     std::string msi   = fmt(v.msi, "%.3f");
     // NM prints with 0.0 only when > 0, else "0".
-    std::string nm    = v.nm > 0 ? fmt(v.nm, "%.1f") : "0";
+    std::string nm    = roundHalfEven(1, v.nm) > 0 ? fmt(v.nm, "%.1f") : "0";
     std::string dup   = fmt(v.duprate, "%.1f");
 
     // The refallele/varallele (and left/right seq, genotype) of a large complex/insertion variant can be
