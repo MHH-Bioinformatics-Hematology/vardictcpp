@@ -12,7 +12,7 @@ python3 make_paper_assets.py    # needs matplotlib + numpy
 |---|---|
 | `outline.md` | Section-by-section manuscript outline (bullet points), GigaByte Technical Release. `[VERIFY]`/`[TODO]` marks items to confirm before submission. |
 | `data/parity.tsv` | Byte-level parity per WES sample (regions, rows, byte-identical, FP, FN). Source for Table 1. |
-| `data/perf.tsv` | Runtime + peak RSS, vardictcpp vs VarDictJava, 1 & 8 threads (clean CPU-pinned runs). Source for Table 2 and the performance figures. Add a `repbench.tsv` (with a `rep` column) to draw replicate box plots. |
+| `data/repbench.tsv` | Runtime + peak RSS over 5 clean, contention-filtered replicates per config, vardictcpp vs VarDictJava, 1 & 8 threads. Source for Table 2 and the performance box plots (`data/perf.tsv` is the single-run fallback). |
 | `data/accuracy.tsv` | GIAB HG002 chr20 exome precision/recall/F1 by class (All/SNV/Indel). Source for Table 3. |
 | `data/per_region.tsv` | Per-1Mb-window precision/recall/F1 (both implementations). Source for the accuracy box plots. |
 | `data/benchmark.sh` | Exact performance-benchmark script (CPU-pinned, `/usr/bin/time -v`, JDK 25, `-Xmx 8g`). |
@@ -26,7 +26,7 @@ python3 make_paper_assets.py    # needs matplotlib + numpy
 
 ## Figures (all box plots, no bars)
 
-- **Fig 1 / Fig 2** — runtime and peak-RSS, vardictcpp vs VarDictJava, 1- and 8-thread panels, log-y; each clean CPU-pinned run is a marker (boxes appear where ≥3 replicates are supplied).
+- **Fig 1 / Fig 2** — runtime and peak-RSS box plots over 5 clean replicates, vardictcpp vs VarDictJava, 1- and 8-thread panels, log-y.
 - **Fig 3** — per-region precision/recall/F1 on the GIAB HG002 chr20 exome, SNV vs indel; the vardictcpp and VarDictJava boxes coincide exactly (byte-identical VCFs).
 
 ## Conventions

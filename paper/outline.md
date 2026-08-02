@@ -16,8 +16,8 @@ statement. Fill every `[VERIFY]` before submission.
   caller; the JVM implementation is memory-heavy and its startup/GC dominate small jobs.
 - **Findings**: a from-scratch C++17 reimplementation (htslib) that reproduces VarDictJava 1.8.3 output
   **byte-for-byte** across all modes and on five whole-exome samples (11k–774k target regions), while
-  running **~3.8–4.4× faster single-core / ~10–12× at 8 threads** and using **~8–17× less peak RAM**
-  (74–122 MB vs ~1.0–1.3 GB single-threaded; ~2.1–2.7 GB at 8 threads). Against an independent
+  running **~3.7–4.8× faster single-core / ~9–11× at 8 threads** and using **~8–17× less peak RAM**
+  (74–122 MB vs ~1.0–1.3 GB single-threaded; ~2.1–2.6 GB at 8 threads). Against an independent
   ground-truth set (GIAB HG002 exome, NIST v4.2.1) the two implementations are byte-identical, so they
   share exactly the same accuracy (SNV F$_1$ 0.985, indel F$_1$ 0.799 in confident regions).
 - **Conclusion**: a verified drop-in replacement enabling VarDict on memory-constrained and
@@ -90,8 +90,8 @@ statement. Fill every `[VERIFY]` before submission.
   (2\,443 truth variants). vardictcpp and VarDictJava emit **byte-identical VCFs** here as well
   (8\,244 variants, 0 differing lines), so the per-region precision/recall/F1 box plots for the two
   implementations coincide exactly — the port preserves accuracy with no deviation.
-- **Performance** (Table 2, Fig 1): wall-clock cpp vs Java, single-core and 8-thread, 3 WES samples
-  (clean CPU-pinned runs; the figure supports replicate box plots once a quiet node is available).
+- **Performance** (Table 2, Fig 1): wall-clock cpp vs Java, single-core and 8-thread, 3 WES samples,
+  box plots over 5 clean (contention-filtered) replicate runs.
 - **Memory** (Table 2, Fig 2): peak RSS cpp vs Java; ~8–17× reduction single-threaded (74–122 MB vs
   ~1.0–1.3 GB), ~7–9× at 8 threads; note the reference-window design is
   what bounds it (a naive contiguous reference gap-fill inflated peak RSS ~25× — mention as a design
@@ -135,12 +135,12 @@ statement. Fill every `[VERIFY]` before submission.
 ## Figure & table plan (files in `paper/`)
 - **Table 1** (`tables.tex`, `tab:parity`): per-sample byte-level parity — sample, source, target
   regions, variant rows, byte-identical, FP, FN; plus a mode-fixture parity row block.
-- **Table 2** (`tables.tex`, `tab:perf`): runtime + peak RSS (clean CPU-pinned runs), cpp vs Java, 1
-  and 8 threads, per sample, with speedup and memory-reduction factors.
+- **Table 2** (`tables.tex`, `tab:perf`): runtime + peak RSS (median of 5 clean replicates), cpp vs
+  Java, 1 and 8 threads, per sample, with speedup and memory-reduction factors.
 - **Table 3** (`tables.tex`, `tab:accuracy`): GIAB HG002 chr20 exome accuracy (All/SNV/Indel): truth,
   TP, FP, FN, precision, recall, F1 (identical for both implementations).
-- **Fig 1** (`figures/fig1_runtime.pdf`): wall-clock runtime, cpp vs Java, single-core and 8-thread
-  panels, 3 WES samples; clean run markers, boxes where $\geq 3$ replicates. Log y. No in-figure text.
+- **Fig 1** (`figures/fig1_runtime.pdf`): box plots (5 clean replicates), wall-clock runtime, cpp vs
+  Java, single-core and 8-thread panels, 3 WES samples. Log y. No in-figure text.
 - **Fig 2** (`figures/fig2_memory.pdf`): box plots, peak RSS, cpp vs Java, log y. No title.
 - **Fig 3** (`figures/fig3_accuracy.pdf`): per-region precision/recall/F1 box plots (SNV vs indel),
   cpp vs Java coinciding exactly. No title.
