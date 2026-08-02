@@ -1161,7 +1161,8 @@ static Match35 find35match(const std::string& seq5, const std::string& seq3) {
     return { b5, b3, maxLen };
 }
 
-void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                    const std::vector<BamReader*>& bams) {
     auto& NIV = vd.nonInsertionVariants;
     const int EXT = Config::EXTENSION;
     auto collect = [&](std::map<int, Sclip>& clips) {
@@ -1239,6 +1240,14 @@ void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const 
             if (isIns) {
                 Variation* mvref = ref.has(bi) ? getVariationMaybe(NIV, bi, ref.at(bi)) : nullptr;
                 adjCnt(vref, sc3v, mvref); adjCnt(vref, sc5v);
+                // VariationRealigner.realignlgins30 (l.1549-1555): tandem-repeat reference drain,
+                // gated on the 5'/3' breakpoint span (p3-p5), not the ref-extended insertion length.
+                if (!bams.empty() && p3 - p5 >= 5 && p3 - p5 < maxReadLength - 10
+                        && mvref != nullptr && mvref->varsCount != 0
+                        && noPassingReads(bams, region.chr, p5, p3)
+                        && vref.varsCount > 2 * mvref->varsCount) {
+                    adjCnt(vref, *mvref, mvref);
+                }
                 // VariationRealigner.realignlgins30 re-runs realignins on the allele it just created
                 // (Java: realignins({bi:{ins:vref.varsCount}})); the whole-map realignins pass ran
                 // earlier in the pipeline and never sees this insertion. This attracts the neighbouring

@@ -31,7 +31,8 @@ using SVReloadFn = std::function<void(int, int)>;
 // AF reflects the true (usually high) depth there and is filtered exactly as in VarDict.
 void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
                   const SVReloadFn& reload, const std::vector<BamReader*>& bams);
-void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                    const std::vector<BamReader*>& bams);
 void adjSNV(VariationData& vd, Reference& ref);
 
 // Structural variants (discordant-pair deletions). filterSVStructures collapses svfdel/svrdel mate
