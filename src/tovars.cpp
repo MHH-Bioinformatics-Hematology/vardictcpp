@@ -237,7 +237,10 @@ std::vector<Variant> callVariants(const Config& cfg, const Region& region,
         // Reference-allele accumulator (allele == ref base).
         const Variation* refVar = nullptr;
         auto rit = alleleMap.find(std::string(1, refBase));
-        if (rit != alleleMap.end()) refVar = &rit->second;
+        // ToVarsBuilder.createVariant (line 432) skips any variation with varsCount==0, so a reference
+        // allele that has been fully drained into a variant (cnt==0 but stale fwd/rev from an adjCnt
+        // clamp) is NOT the referenceVariant: RefFwd/RefRev/hicnt/mapq must read as absent, not stale.
+        if (rit != alleleMap.end() && rit->second.varsCount != 0) refVar = &rit->second;
         int refHicnt = refVar ? refVar->highQualityReadsCount : 0;
         double refMeanMapq = (refVar && refVar->varsCount) ? refVar->meanMappingQuality / refVar->varsCount : 0;
 
@@ -770,7 +773,10 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
 
         const Variation* refVar = nullptr;
         auto rit = alleleMap.find(std::string(1, refBase));
-        if (rit != alleleMap.end()) refVar = &rit->second;
+        // ToVarsBuilder.createVariant (line 432) skips any variation with varsCount==0, so a reference
+        // allele that has been fully drained into a variant (cnt==0 but stale fwd/rev from an adjCnt
+        // clamp) is NOT the referenceVariant: RefFwd/RefRev/hicnt/mapq must read as absent, not stale.
+        if (rit != alleleMap.end() && rit->second.varsCount != 0) refVar = &rit->second;
         int refHicnt = refVar ? refVar->highQualityReadsCount : 0;
         double refMeanMapq = (refVar && refVar->varsCount) ? refVar->meanMappingQuality / refVar->varsCount : 0;
 
