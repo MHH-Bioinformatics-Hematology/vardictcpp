@@ -866,7 +866,10 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
                                 addCnt(getVariationFromSeq(sc, idx, ch),
                                        reverse, si - (el - hq), bqual[si], mapq, nm, cfg_.goodq);
                             }
-                            addCnt(sc, reverse, len, (double)sumq / hq, mapq, nm, cfg_.goodq);
+                            // Java sclip5HighQualityProcessing passes the *remaining* soft-clip length
+                            // (cigarElementLength, decremented by the mis-softclip match-extension loop
+                            // above), not the original clip length, into the whole-Sclip addCnt.
+                            addCnt(sc, reverse, el, (double)sumq / hq, mapq, nm, cfg_.goodq);
                         }
                     }
                 } else if (isThreePrime) {
@@ -898,7 +901,10 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
                                 addCnt(getVariationFromSeq(sc, si, ch),
                                        reverse, hq - si, bqual[qp + si], mapq, nm, cfg_.goodq);
                             }
-                            addCnt(sc, reverse, len, (double)sumq / hq, mapq, nm, cfg_.goodq);
+                            // Java sclip3HighQualityProcessing passes the *remaining* soft-clip length
+                            // (cigarElementLength, decremented by the mis-softclip match-extension loop
+                            // above), not the original clip length, into the whole-Sclip addCnt.
+                            addCnt(sc, reverse, el, (double)sumq / hq, mapq, nm, cfg_.goodq);
                         }
                     }
                 }
