@@ -15,7 +15,11 @@ void adjustMNP(VariationData& vd, Reference& ref, const Config& cfg, const Regio
 // Realign insertions/deletions: attribute nearby mismatch SNVs and soft-clip consensus to the
 // indel (removing the spurious SNVs), and merge duplicate representations (VariationRealigner).
 void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
-void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
+// `bams` are the open BAM readers backing this pipeline (single-sample: one; merged combineAnalysis:
+// both). realigndel needs them for the noPassingReads microhomology check (VariationRealigner l.617);
+// pass empty to skip it (behaves as bams==null in Java).
+void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                const std::vector<BamReader*>& bams);
 
 // `reload(mstart,mend)` re-parses reads over a far breakpoint [mstart-200,mend+200] into vd (coverage
 // only, no SV clusters), mirroring the partialPipeline reload that lets low-VAF SVs be AF-filtered.

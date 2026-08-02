@@ -254,7 +254,7 @@ static int run(int argc, char** argv) {
                     Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
                     CigarParser(c, ref, bam).process(rr, vd, /*reloadMode=*/true);
                 };
-                realigndel(vd, ref, c, region, vd.maxReadLength);
+                realigndel(vd, ref, c, region, vd.maxReadLength, {&bam});
                 realignins(vd, ref, c, region, vd.maxReadLength);
                 realignlgdel(vd, ref, c, region, vd.maxReadLength, reload);
                 realignlgins30(vd, ref, c, region, vd.maxReadLength);
@@ -352,7 +352,7 @@ static int run(int argc, char** argv) {
             Region rr; rr.chr = region.chr; rr.start = ms - 200; rr.end = me + 200; rr.gene = region.gene;
             CigarParser(c, ref, b).process(rr, vd, /*reloadMode=*/true);
         };
-        realigndel(vd, ref, c, region, vd.maxReadLength);
+        realigndel(vd, ref, c, region, vd.maxReadLength, {&b});
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength, reload);
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
@@ -381,7 +381,7 @@ static int run(int argc, char** argv) {
             CigarParser(c, ref, b1).process(rr, vd, /*reloadMode=*/true);
             CigarParser(c, ref, b2).process(rr, vd, /*reloadMode=*/true);
         };
-        realigndel(vd, ref, c, region, vd.maxReadLength);
+        realigndel(vd, ref, c, region, vd.maxReadLength, {&b1, &b2});
         realignins(vd, ref, c, region, vd.maxReadLength);
         realignlgdel(vd, ref, c, region, vd.maxReadLength, reload);
         realignlgins30(vd, ref, c, region, vd.maxReadLength);

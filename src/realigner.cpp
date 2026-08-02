@@ -668,7 +668,53 @@ void realignins(VariationData& vd, Reference& ref, const Config& cfg, const Regi
 
 // ---- realigndel ---------------------------------------------------------------------------------
 
-void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength) {
+// VariationRealigner.noPassingReads / vardict.pl sub noPassingReads. Scans the raw BAM over [s,e]
+// (1-based inclusive, NO mapq/flag filtering, exactly like `samtools view $bam $chr:$s-$e`) and
+// returns true when no read cleanly spans the gap as reference (cnt<=0). Reads whose CIGAR string
+// already contains the exact "<e-s>D" deletion are skipped (they support the deletion). rlen is the
+// aligned length (M+D only, CigarParser.getAlignedLength); re = alignmentStart + rlen. A "passing"
+// read has re > e+2 && rs < s-2. Java's `midcnt` term (midcnt+1>0) is always true, so it is omitted.
+static bool noPassingReads(const std::vector<BamReader*>& bams, const std::string& chr, int s, int e) {
+    int cnt = 0;
+    std::string dlenqr = std::to_string(e - s) + "D";
+    for (BamReader* br : bams) {
+        if (!br) continue;
+        bam_hdr_t* hdr = br->hdr();
+        int tid = bam_name2id(hdr, chr.c_str());
+        if (tid < 0) {
+            std::string alt = (chr.rfind("chr", 0) == 0) ? chr.substr(3) : "chr" + chr;
+            tid = bam_name2id(hdr, alt.c_str());
+        }
+        if (tid < 0) continue;
+        hts_itr_t* it = sam_itr_queryi(br->idx(), tid, s - 1, e);
+        if (!it) continue;
+        bam1_t* b = bam_init1();
+        while (sam_itr_next(br->fp(), it, b) >= 0) {
+            const bam1_core_t& c = b->core;
+            if (c.n_cigar == 0) continue;
+            const uint32_t* cig = bam_get_cigar(b);
+            std::string cigstr;
+            int rlen = 0;
+            for (uint32_t k = 0; k < c.n_cigar; ++k) {
+                int op = bam_cigar_op(cig[k]);
+                int ol = bam_cigar_oplen(cig[k]);
+                cigstr += std::to_string(ol);
+                cigstr += bam_cigar_opchr(cig[k]);
+                if (op == BAM_CMATCH || op == BAM_CDEL) rlen += ol;
+            }
+            if (cigstr.find(dlenqr) != std::string::npos) continue;
+            int rs = (int)c.pos + 1; // 1-based alignment start
+            int re = rs + rlen;
+            if (re > e + 2 && rs < s - 2) cnt++;
+        }
+        bam_destroy1(b);
+        hts_itr_destroy(it);
+    }
+    return cnt <= 0;
+}
+
+void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                const std::vector<BamReader*>& bams) {
     struct Item { int position; std::string desc; int count; };
     std::vector<Item> tmp;
     for (auto& [pos, m] : vd.positionToDeletionCount) for (auto& [d, c] : m) tmp.push_back({pos, d, c});
@@ -763,6 +809,19 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
                 if (sc3pp <= p) vd.refCoverage[p] += tv.varsCount;
                 Variation* lref = (sc3pp <= p) ? nullptr : (ref.has(p) ? getVariationMaybe(NIV, p, ref.at(p)) : nullptr);
                 adjCnt(vref, tv, lref); tv.used = true;
+            }
+        }
+        // VariationRealigner.realigndel l.608-620 / vardict.pl l.4559: for a deletion with
+        // microhomology where no read cleanly spans the gap as reference (noPassingReads), the
+        // ambiguous reference reads at p (which only match the first bases of the repeat before
+        // ending mid-gap) actually belong to the deletion, so fold h into vref.
+        int pe = p + dellen + (int)extra.size() - (int)extrains.size();
+        if (!bams.empty() && pe - p >= 5 && pe - p < maxReadLength - 10 && ref.has(p)) {
+            Variation* h = getVariationMaybe(NIV, p, ref.at(p));
+            if (h && h->varsCount != 0
+                && noPassingReads(bams, region.chr, p, pe)
+                && vref.varsCount > 2.0 * h->varsCount * (1 - (pe - p) / (double)maxReadLength)) {
+                adjCnt(vref, *h, h);
             }
         }
     }
