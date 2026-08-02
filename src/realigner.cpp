@@ -713,26 +713,21 @@ static bool noPassingReads(const std::vector<BamReader*>& bams, const std::strin
     return cnt <= 0;
 }
 
-void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
-                const std::vector<BamReader*>& bams) {
-    struct Item { int position; std::string desc; int count; };
-    std::vector<Item> tmp;
-    for (auto& [pos, m] : vd.positionToDeletionCount) for (auto& [d, c] : m) tmp.push_back({pos, d, c});
-    std::sort(tmp.begin(), tmp.end(), [](const Item& a, const Item& b) {
-        if (a.count != b.count) return a.count > b.count;
-        if (a.position != b.position) return a.position < b.position;
-        return a.desc > b.desc;
-    });
+// One deletion's realignment: attribute nearby mismatch SNVs + soft-clip consensus to the deletion
+// (VariationRealigner.realigndel per-position body). Extracted so realignlgdel can re-run it on the
+// single large deletion it just built (Java realigndel(bams, dels5), l.1174/1345).
+static void realignOneDel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
+                          int maxReadLength, const std::vector<BamReader*>& bams,
+                          int p, const std::string& vn, int dcnt) {
     auto& NIV = vd.nonInsertionVariants;
-    for (const auto& t : tmp) {
-        int p = t.position; const std::string& vn = t.desc; int dcnt = t.count;
+    {
         // BEGIN_MINUS_NUMBER: dellen. Complex deletions "-N&ss"/"-N^ins"/"-N#seg^M" carry a tail that
         // shifts the 5'/3' flanking sequences used for soft-clip re-matching, so a complex deletion
         // does NOT scoop the soft-clip that belongs to the plain "-N" (VariationRealigner realigndel).
         //   BEGIN_MINUS_NUMBER_ANY  extra    = tail after "-<dellen>", with ^,&,# stripped
         //   CARET_ATGNC             extrains = ATGNC run following the first '^'
         //   UP_NUMBER_END           dellen  += trailing "^<digits>"
-        if (vn.empty() || vn[0] != '-') continue;
+        if (vn.empty() || vn[0] != '-') return;
         int dellen = std::atoi(vn.c_str() + 1);
         std::string extra, extrains;
         {
@@ -825,6 +820,20 @@ void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Regi
             }
         }
     }
+}
+
+void realigndel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                const std::vector<BamReader*>& bams) {
+    struct Item { int position; std::string desc; int count; };
+    std::vector<Item> tmp;
+    for (auto& [pos, m] : vd.positionToDeletionCount) for (auto& [d, c] : m) tmp.push_back({pos, d, c});
+    std::sort(tmp.begin(), tmp.end(), [](const Item& a, const Item& b) {
+        if (a.count != b.count) return a.count > b.count;
+        if (a.position != b.position) return a.position < b.position;
+        return a.desc > b.desc;
+    });
+    auto& NIV = vd.nonInsertionVariants;
+    for (const auto& t : tmp) realignOneDel(vd, ref, cfg, region, maxReadLength, bams, t.position, t.desc, t.count);
     // Merge "-N&extra" into "-N".
     for (int i = (int)tmp.size() - 1; i > 0; --i) {
         int p = tmp[i].position; const std::string& vn = tmp[i].desc;
@@ -882,7 +891,8 @@ void adjSNV(VariationData& vd, Reference& ref) {
 // The discordant-pair svcov/markSV bookkeeping is not ported (pairs=clusters=0; splits accumulates the
 // clip count); this only affects the SV_info split/pair columns, not the emitted deletion's AF filter.
 
-void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength, const SVReloadFn& reload) {
+void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                  const SVReloadFn& reload, const std::vector<BamReader*>& bams) {
     auto& NIV = vd.nonInsertionVariants;
     const int EXT = Config::EXTENSION;
 
@@ -980,6 +990,16 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
             }
             sclip.used = (bp != 0);
         }
+        // Java realignlgdel l.1173-1179: re-run realigndel on this single large deletion (mismatch-SNV
+        // attribution + noPassingReads fold-in) and bump the SV anchor's split count by reads it drew in.
+        {
+            int origCnt = tv.varsCount;
+            realignOneDel(vd, ref, cfg, region, maxReadLength, bams, bp, gt, origCnt);
+            auto pit2 = NIV.find(bp);
+            int newCnt = (pit2 != NIV.end() && pit2->second.count(gt)) ? pit2->second[gt].varsCount : origCnt;
+            auto svit = vd.svInfoAt.find(bp);
+            if (svit != vd.svInfoAt.end()) svit->second.splits += newCnt - origCnt;
+        }
     }
 
     // 3' soft-clipped reads
@@ -1033,6 +1053,15 @@ void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Re
         if (!vd.refCoverage.count(bp)) vd.refCoverage[bp] = vd.refCoverage.count(p - 1) ? vd.refCoverage[p - 1] : sc3v.varsCount;
         sc3v.meanPosition += (double)dellen * sc3v.varsCount;
         adjCnt(tv, sc3v); sc3v.used = true;
+        // Java realignlgdel l.1341-1348: re-run realigndel on this single large deletion.
+        {
+            int origCnt = tv.varsCount;
+            realignOneDel(vd, ref, cfg, region, maxReadLength, bams, bp, gt, origCnt);
+            auto pit2 = NIV.find(bp);
+            int newCnt = (pit2 != NIV.end() && pit2->second.count(gt)) ? pit2->second[gt].varsCount : origCnt;
+            auto svit = vd.svInfoAt.find(bp);
+            if (svit != vd.svInfoAt.end()) svit->second.splits += newCnt - origCnt;
+        }
     }
 }
 

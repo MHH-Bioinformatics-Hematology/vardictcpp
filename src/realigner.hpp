@@ -29,7 +29,8 @@ using SVReloadFn = std::function<void(int, int)>;
 // realigned breakpoint lands outside the current region (bp < region.start for a 5' clip, bp >
 // region.end for a 3' clip), `reload` re-reads the coverage at the breakpoint so the deletion's
 // AF reflects the true (usually high) depth there and is filtered exactly as in VarDict.
-void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength, const SVReloadFn& reload);
+void realignlgdel(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength,
+                  const SVReloadFn& reload, const std::vector<BamReader*>& bams);
 void realignlgins30(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);
 void adjSNV(VariationData& vd, Reference& ref);
 
