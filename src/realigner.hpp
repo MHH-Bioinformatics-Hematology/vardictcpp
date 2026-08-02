@@ -43,7 +43,7 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
 // StructuralVariantsProcessor.findINV: pair-assisted <INV> caller over the discordant same-orientation
 // INV clusters. Runs after realignment, BEFORE findsv (so the split-read path skips folded soft clips).
 void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
-             int maxReadLength, const SVReloadFn& reload);
+             int maxReadLength, const SVReloadFn& reload, const std::vector<BamReader*>& bams);
 // StructuralVariantsProcessor.findsv: split-read SVs from soft clips. Only the candidate-inversion
 // path is emitted here (<INV>); runs after realignment, before findDELdisc (findAllSVs order).
 void findsv(VariationData& vd, Reference& ref, const Config& cfg, const Region& region, int maxReadLength);

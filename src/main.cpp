@@ -359,7 +359,7 @@ static int run(int argc, char** argv) {
         realignlgins(vd, ref, c, region, vd.maxReadLength, reload);
         // StructuralVariantsProcessor.findAllSVs runs after realignment, before adjSNV. Ported paths,
         // in Java order: findINV (pair-assisted <INV>), findsv (split-read <INV>), findDELdisc (<DEL>).
-        if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload);
+        if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload, {&b});
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);
@@ -386,7 +386,7 @@ static int run(int argc, char** argv) {
         realignlgdel(vd, ref, c, region, vd.maxReadLength, reload, {&b1, &b2});
         realignlgins30(vd, ref, c, region, vd.maxReadLength);
         realignlgins(vd, ref, c, region, vd.maxReadLength, reload);
-        if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload);
+        if (!c.disableSV) findINV(vd, ref, c, region, vd.maxReadLength, reload, {&b1, &b2});
         if (!c.disableSV) findsv(vd, ref, c, region, vd.maxReadLength);
         if (!c.disableSV) findDELdisc(vd, ref, c, region, vd.maxReadLength);
         adjSNV(vd, ref);

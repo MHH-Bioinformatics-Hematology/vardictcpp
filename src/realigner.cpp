@@ -1624,8 +1624,8 @@ void findDELdisc(VariationData& vd, Reference& ref, const Config& cfg, const Reg
 // Returns after the first cluster that yields an inversion (mirrors the Java `return vref`).
 static void findINVsub(std::vector<Sclip>& svref, int dir, int side,
                        VariationData& vd, Reference& ref, const Config& cfg,
-                       const Region& region, int maxReadLength, const SVReloadFn& reload) {
-    (void)region;
+                       const Region& region, int maxReadLength, const SVReloadFn& reload,
+                       const std::vector<BamReader*>& bams) {
     auto& NIV = vd.nonInsertionVariants;
     for (Sclip& inv : svref) {
         if (inv.used) continue;
@@ -1697,21 +1697,22 @@ static void findINVsub(std::vector<Sclip>& svref, int dir, int side,
             adjCnt(vref, *scv, vrefSoftp);
             vd.refCoverage[softp] = vd.refCoverage.count(softp - 1) ? vd.refCoverage[softp - 1] : inv.varsCount;
             scv->used = true;
-            // Java re-runs realigndel on the single {softp:{gt:inv.varsCount}} deletion hash here; on this
-            // dataset that attracts no additional reads (the inversion allele is not a plain deletion), so
-            // the emitted counts already match. Omitted; re-add if a locus needs it.
+            // Java re-runs realigndel on the single {softp:{gt:inv.varsCount}} INV "deletion" hash
+            // (StructuralVariantsProcessor.findINVsub l.658-667). The opposite-strand soft clip at softp
+            // (reverse-complement of scv) gets attracted into the inversion, raising AltDepth/coverage.
+            realignOneDel(vd, ref, cfg, region, maxReadLength, bams, softp, gt, inv.varsCount);
             return;
         }
     }
 }
 
 void findINV(VariationData& vd, Reference& ref, const Config& cfg, const Region& region,
-             int maxReadLength, const SVReloadFn& reload) {
+             int maxReadLength, const SVReloadFn& reload, const std::vector<BamReader*>& bams) {
     if (cfg.disableSV) return;
-    findINVsub(vd.svfinv5, 1, 5, vd, ref, cfg, region, maxReadLength, reload);
-    findINVsub(vd.svrinv5, -1, 5, vd, ref, cfg, region, maxReadLength, reload);
-    findINVsub(vd.svfinv3, 1, 3, vd, ref, cfg, region, maxReadLength, reload);
-    findINVsub(vd.svrinv3, -1, 3, vd, ref, cfg, region, maxReadLength, reload);
+    findINVsub(vd.svfinv5, 1, 5, vd, ref, cfg, region, maxReadLength, reload, bams);
+    findINVsub(vd.svrinv5, -1, 5, vd, ref, cfg, region, maxReadLength, reload, bams);
+    findINVsub(vd.svfinv3, 1, 3, vd, ref, cfg, region, maxReadLength, reload, bams);
+    findINVsub(vd.svrinv3, -1, 3, vd, ref, cfg, region, maxReadLength, reload, bams);
 }
 
 // StructuralVariantsProcessor.findsv: split-read SVs on 3'/5' soft clips. The forward findMatch branch
