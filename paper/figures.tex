@@ -1,4 +1,4 @@
-% Figure blocks for the vardictcpp paper. The figures carry no title or in-figure prose;
+% Figure blocks for the vardictcpp paper. Figures carry no title or in-figure prose;
 % all descriptive text is in these captions. PDFs are produced by make_paper_assets.py.
 
 \begin{figure}[t]
@@ -6,12 +6,13 @@
   \includegraphics[width=\linewidth]{figures/fig1_runtime.pdf}
   \caption{\label{fig:runtime}%
     Wall-clock runtime of \textbf{vardictcpp} (blue) and \textbf{VarDict-Java 1.8.3} (orange) on three
-    whole-exome samples at (\textbf{a}) one thread and (\textbf{b}) eight threads. Samples are labelled
-    by target-region count on the $x$-axis: \texttt{SRR15006376} ($\sim$106\,k regions),
-    \texttt{SRR15006540} ($\sim$135\,k), and \texttt{SRR8657348} ($\sim$774\,k, a high-coverage CCLE
-    run). All runs used hg19, minimum allele frequency $0.01$, CPU affinity pinning, and were timed with
-    \texttt{/usr/bin/time -v}; VarDictJava ran on JDK~25 with \texttt{-Xmx\,8g}. The $y$-axis is
-    log-scaled; lower is faster. vardictcpp is $\sim$3.8--4.4$\times$ faster single-core and
+    whole-exome samples at (\textbf{a}) one thread and (\textbf{b}) eight threads. Each marker is a
+    CPU-pinned run and the tick its value (boxes summarising replicates are drawn where $\geq 3$ clean
+    replicates are available). Samples are labelled by target-region count: \texttt{SRR15006376} ($\sim$106\,k),
+    \texttt{SRR15006540} ($\sim$135\,k), and \texttt{SRR8657348} ($\sim$774\,k, an MV4-11 AML cell-line
+    CCLE run). All runs used hg19, minimum allele frequency $0.01$, CPU-affinity pinning, and were
+    timed with \texttt{/usr/bin/time -v}; VarDictJava ran on JDK~25 with \texttt{-Xmx\,8g}. The
+    $y$-axis is log-scaled; lower is faster. vardictcpp is $\sim$3.8--4.4$\times$ faster single-core and
     $\sim$10--12$\times$ faster at eight threads.}
 \end{figure}
 
@@ -20,10 +21,26 @@
   \includegraphics[width=\linewidth]{figures/fig2_memory.pdf}
   \caption{\label{fig:memory}%
     Peak resident set size (RSS) of \textbf{vardictcpp} (blue) and \textbf{VarDict-Java 1.8.3} (orange)
-    on the same three samples at (\textbf{a}) one and (\textbf{b}) eight threads, same run configuration
-    as Fig.~\ref{fig:runtime}. The $y$-axis is log-scaled (MB); lower is leaner. Single-threaded,
-    vardictcpp holds 74--122\,MB against VarDictJava's $\sim$1.0--1.3\,GB (an $\sim$8--17$\times$
-    reduction); at eight threads vardictcpp stays at 248--364\,MB against $\sim$2.1--2.7\,GB
-    ($\sim$7--9$\times$). vardictcpp stores the reference as disjoint windows matching Java's
-    reference map, so a distant realignment breakpoint never gap-fills a multi-megabase span.}
+    on the same three samples at (\textbf{a}) one and (\textbf{b}) eight threads; marker and run
+    configuration as in Fig.~\ref{fig:runtime}. The $y$-axis is log-scaled (MB); lower is leaner.
+    Single-threaded, vardictcpp holds 74--122\,MB against VarDictJava's $\sim$1.0--1.3\,GB (an
+    $\sim$8--17$\times$ reduction); at eight threads vardictcpp stays at 248--364\,MB against
+    $\sim$2.1--2.7\,GB ($\sim$7--9$\times$). vardictcpp stores the reference as disjoint windows
+    matching Java's reference map, so a distant realignment breakpoint never gap-fills a
+    multi-megabase span.}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/fig3_accuracy.pdf}
+  \caption{\label{fig:accuracy}%
+    Variant-calling accuracy of VarDict on the GIAB HG002 chromosome-20 exome, against the NIST
+    v4.2.1 benchmark (\texttt{rtg vcfeval}, callable confident regions, germline operating point:
+    PASS and allele frequency $\geq 0.2$). Each box is the distribution of per-region
+    (\textbf{a})~precision, (\textbf{b})~recall, and (\textbf{c})~F$_1$ across 1-Mb windows (52 for
+    SNVs, 20 for indels; windows with $\geq 5$ truth and $\geq 5$ called variants), split by variant
+    class; individual windows are overplotted. \textbf{vardictcpp} (blue) and \textbf{VarDict-Java}
+    (orange) produce byte-identical VCFs, so the two distributions coincide exactly in every panel:
+    the port preserves VarDict's accuracy without deviation. SNV calling is near-perfect and tight;
+    indel calling is lower and more variable, as expected for VarDict.}
 \end{figure}

@@ -17,7 +17,9 @@ statement. Fill every `[VERIFY]` before submission.
 - **Findings**: a from-scratch C++17 reimplementation (htslib) that reproduces VarDictJava 1.8.3 output
   **byte-for-byte** across all modes and on five whole-exome samples (11k–774k target regions), while
   running **~3.8–4.4× faster single-core / ~10–12× at 8 threads** and using **~8–17× less peak RAM**
-  (74–122 MB vs ~1.0–1.3 GB single-threaded; ~2.1–2.7 GB at 8 threads).
+  (74–122 MB vs ~1.0–1.3 GB single-threaded; ~2.1–2.7 GB at 8 threads). Against an independent
+  ground-truth set (GIAB HG002 exome, NIST v4.2.1) the two implementations are byte-identical, so they
+  share exactly the same accuracy (SNV F$_1$ 0.985, indel F$_1$ 0.799 in confident regions).
 - **Conclusion**: a verified drop-in replacement enabling VarDict on memory-constrained and
   high-throughput settings; every divergence encountered during development was a port bug corrected
   toward the reference (no upstream-bug divergences), and the two latent bugs found in the process are
@@ -64,6 +66,13 @@ statement. Fill every `[VERIFY]` before submission.
   Every residual row triaged read-by-read (`samtools view` + VarDict `-y` trace) against **both** Java
   and the original Perl to classify port-bug vs upstream-bug; port bugs fixed, upstream bugs would be
   documented as intentional divergences.
+- **Ground-truth accuracy** (independent of the Java reference): call VarDict on a benchmark sample
+  with a public high-confidence truth set (GIAB HG002, Agilent SureSelect v5 exome, chromosome 20) and
+  score with `rtg vcfeval` over callable confident regions (exome depth ≥ 20; germline operating point
+  = PASS and AF ≥ 0.2). Report per-region precision/recall/F1 distributions. Because vardictcpp and
+  VarDictJava emit **byte-identical VCFs on this sample too**, this measures VarDict's accuracy while
+  showing the port inherits it exactly. hg19 primary-assembly sequence equals GRCh37 for chr1–22,X, so
+  the local hg19 reference (contig renamed to match the truth) is reused without a separate download.
 
 ## Results / Validation
 - **Byte-level parity** (Table 1): all five WES samples `diff == 0` (0 FP / 0 FN), plus per-mode golden
@@ -76,7 +85,13 @@ statement. Fill every `[VERIFY]` before submission.
   vardictcpp-only or also affects a downstream consumer — [VERIFY]]; (ii) a soft-clip read filter that in
   vardictcpp was applied to the pre-modification CIGAR, manufacturing false indels (matched Java by
   moving it post-`modifyCigar`).
-- **Performance** (Table 2, Fig 1): wall-clock cpp vs Java, single-core and 8-thread, 3 WES samples.
+- **Ground-truth accuracy** (Table 3, Fig 3): on GIAB HG002 chr20 exome vs NIST v4.2.1, VarDict scores
+  SNV precision/recall/F1 = 0.996/0.974/0.985 and indel 0.877/0.734/0.799 in callable confident regions
+  (2\,443 truth variants). vardictcpp and VarDictJava emit **byte-identical VCFs** here as well
+  (8\,244 variants, 0 differing lines), so the per-region precision/recall/F1 box plots for the two
+  implementations coincide exactly — the port preserves accuracy with no deviation.
+- **Performance** (Table 2, Fig 1): wall-clock cpp vs Java, single-core and 8-thread, 3 WES samples
+  (clean CPU-pinned runs; the figure supports replicate box plots once a quiet node is available).
 - **Memory** (Table 2, Fig 2): peak RSS cpp vs Java; ~8–17× reduction single-threaded (74–122 MB vs
   ~1.0–1.3 GB), ~7–9× at 8 threads; note the reference-window design is
   what bounds it (a naive contiguous reference gap-fill inflated peak RSS ~25× — mention as a design
@@ -103,8 +118,13 @@ statement. Fill every `[VERIFY]` before submission.
 - Input WES BAMs: SRA run accessions [Table 1]; reference hg19. Provide the exact commands and the
   covered-target BEDs. Archive the five Java `-th 1` golden TSVs + the comparison scripts as a GigaDB
   dataset [TODO] so parity is independently re-checkable.
-- **[VERIFY] sample provenance**: confirm BioProject/GSE for each SRR and confirm SRR8657348 is the
-  CCLE run before asserting it in print.
+- **Sample provenance** (confirmed via ENA): SRR15006375/376/386/540 are targeted-capture AML samples
+  from BioProject PRJNA742684 (adult AML bone marrow, Illumina MiSeq); SRR8657348 is the MV4-11 AML
+  cell line (BioProject PRJNA523380, CCLE targeted capture).
+- **Accuracy benchmark data**: GIAB HG002 (NA24385) Agilent SureSelect v5 exome BAM
+  (OsloUniversityHospital_Exome, GRCh37) + NIST v4.2.1 benchmark VCF/BED. Provide the chr20 extraction,
+  reference-contig renaming, calling, `var2vcf` + strand-bias steps, and `rtg vcfeval` commands
+  (`bench/giab_acc/`). Truth and confident BED are public; archive the derived call VCFs + scripts.
 
 ## Declarations
 - Competing interests; funding; author contributions; acknowledgements (VarDict/VarDictJava authors —
@@ -115,17 +135,22 @@ statement. Fill every `[VERIFY]` before submission.
 ## Figure & table plan (files in `paper/`)
 - **Table 1** (`tables.tex`, `tab:parity`): per-sample byte-level parity — sample, source, target
   regions, variant rows, byte-identical, FP, FN; plus a mode-fixture parity row block.
-- **Table 2** (`tables.tex`, `tab:perf`): runtime + peak RSS, cpp vs Java, 1 and 8 threads, per sample,
-  with speedup and memory-reduction factors.
-- **Fig 1** (`figures/fig1_runtime.pdf`): grouped bars, wall-clock runtime, cpp vs Java, single-core and
-  8-thread panels, 3 WES samples. Log y. No title/in-figure text — all wording in the caption.
-- **Fig 2** (`figures/fig2_memory.pdf`): grouped bars, peak RSS, cpp vs Java, log y. No title.
-- **Fig 3** (optional, `figures/fig3_scaling.pdf`): cpp thread scaling (1/4/8/16) on the 774k-region
-  sample — runtime and RSS vs thread count.
+- **Table 2** (`tables.tex`, `tab:perf`): runtime + peak RSS (clean CPU-pinned runs), cpp vs Java, 1
+  and 8 threads, per sample, with speedup and memory-reduction factors.
+- **Table 3** (`tables.tex`, `tab:accuracy`): GIAB HG002 chr20 exome accuracy (All/SNV/Indel): truth,
+  TP, FP, FN, precision, recall, F1 (identical for both implementations).
+- **Fig 1** (`figures/fig1_runtime.pdf`): wall-clock runtime, cpp vs Java, single-core and 8-thread
+  panels, 3 WES samples; clean run markers, boxes where $\geq 3$ replicates. Log y. No in-figure text.
+- **Fig 2** (`figures/fig2_memory.pdf`): box plots, peak RSS, cpp vs Java, log y. No title.
+- **Fig 3** (`figures/fig3_accuracy.pdf`): per-region precision/recall/F1 box plots (SNV vs indel),
+  cpp vs Java coinciding exactly. No title.
 
 ## To finalise before writing
-- [ ] Confirm sample provenance (BioProject/GSE; CCLE identity of SRR8657348).
+- [x] Confirm sample provenance (BioProject/GSE; CCLE identity of SRR8657348) — done via ENA:
+      PRJNA742684 (AML WES) and PRJNA523380 (MV4-11 / CCLE).
 - [ ] Confirm canonical GitHub URL, license header, and cut a tagged release + Zenodo DOI.
 - [ ] Decide the scope claim wording: "byte-identical on the five WES samples tested + all mode
       fixtures" (accurate) — do **not** claim "all possible WES data" (an asymptote).
 - [ ] Check whether the buffer-overflow bug also affects VarDictJava (would strengthen the bug report).
+- [ ] Accuracy caveat wording: the GIAB benchmark is chr20 only (bounds compute); note this and that it
+      characterises VarDict, inherited byte-identically by the port — not a novel-accuracy claim.
