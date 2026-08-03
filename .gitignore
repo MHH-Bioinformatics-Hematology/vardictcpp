@@ -7,3 +7,7 @@ compile_commands.json
 !test/data/golden.simple.tsv
 !bench/somatic_dev/golden_som.tsv
 !bench/somatic_dev/golden_comb.tsv
+
+# Paper assets and release notes are deliverables kept out of the repository
+paper/
+RELEASE_NOTES_1.md
