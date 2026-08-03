@@ -20,7 +20,9 @@ struct Variant {
     int varFwd = 0, varRev = 0; // variant strand reads
     std::string genotype;
     double frequency = 0;       // AF
-    std::string bias = "0;0";
+    std::string bias = "0";     // matches VarDictJava Variant.strandBiasFlag default; real variants
+                                // overwrite this, so only placeholder variants (e.g. a StrongLOH tumor
+                                // block) show it -- where Java prints "0", not "0;0".
     double pmean = 0;           // PMean
     int    pstd = 0;            // PStd (0/1)
     double qmean = 0;           // QMean

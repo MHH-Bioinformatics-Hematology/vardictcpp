@@ -327,8 +327,11 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
                 const Variant* v1var = getTopVar(v1);
                 int tcov = (v1var && v1var->totalPosCoverage) ? v1var->totalPosCoverage : 0;
                 const Variant* v1ref = v1->hasRef ? &v1->referenceVariant : nullptr;
-                int fwd = v1ref ? v1ref->varFwd : 0;
-                int rev = v1ref ? v1ref->varRev : 0;
+                // The tumor RefFwd/RefRev of a normal-only (StrongLOH) variant come from the tumor
+                // reference variant's reference-strand counts (refFwd/refRev). A reference variant has no
+                // alt, so varFwd/varRev are 0 -- reading those left the tumor RefFwd/RefRev stuck at 0.
+                int fwd = v1ref ? v1ref->refFwd : 0;
+                int rev = v1ref ? v1ref->refRev : 0;
                 std::string genotype = v1var ? v1var->genotype
                                              : (v1ref ? v1ref->descriptionString + "/" + v1ref->descriptionString : "N/N");
                 Variant v2varc = v2var0;

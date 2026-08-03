@@ -906,7 +906,10 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             rv.pmean = refVar->varsCount ? refVar->meanPosition / refVar->varsCount : 0;
             rv.qmean = refVar->varsCount ? refVar->meanQuality / refVar->varsCount : 0;
             rv.mapq  = refVar->varsCount ? refVar->meanMappingQuality / refVar->varsCount : 0;
-            rv.nm    = refVar->varsCount ? refVar->numberOfMismatches / refVar->varsCount : 0;
+            // ToVarsBuilder rounds numberOfMismatches to 1 dp at construction (roundHalfEven("0.0", ..)).
+            // The printer's "nm > 0 ? %.1f : 0" test then sees the rounded value, so an nm of e.g. 0.04
+            // becomes 0.0 and prints "0" -- not "0.0" as raw 0.04 would. Match that here for the ref block.
+            rv.nm    = refVar->varsCount ? roundHalfEven("0.0", refVar->numberOfMismatches / refVar->varsCount) : 0;
             rv.pstd  = refVar->pstd ? 1 : 0;
             rv.qstd  = refVar->qstd ? 1 : 0;
             rv.hicnt = refVar->highQualityReadsCount; rv.hicov = hicov;
