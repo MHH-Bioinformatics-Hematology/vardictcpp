@@ -321,20 +321,30 @@ void modifyCigar(int& position, Cig& cig, std::string& seq, std::vector<int>& qu
     if (cig.back().second == 'I') cig.back().second = 'S';
 
     // chimeric-seed clip removal (SEED_2): drop a large leading/trailing soft-clip whose reverse-
-    // complement maps uniquely near the read.
+    // complement maps uniquely near the read. CigarModifier.java 83-130 selects the branch by which
+    // 2+-digit soft-clip is PRESENT (sc5 = ^(\d\d+)S, sc3 = (\d\d+)S$, i.e. clip length >= 10), with
+    // the `>= SEED_2` removal test applied INSIDE the chosen branch. The 5' branch has priority and is
+    // an `else if` chain: a 2-digit-but-sub-SEED_2 leading clip (length 10 or 11) therefore claims the
+    // 5' branch, does nothing, and suppresses any 3' clip removal. Folding `>= SEED_2` into the branch
+    // condition (as before) wrongly let such a read fall through and strip its trailing clip, which in
+    // turn hid it from the `^\d\dS.*\d\dS$` chimeric read filter and inflated coverage.
     if (!cfg.chimeric) {
-        if (cig.front().second == 'S' && cig.front().first >= Reference::SEED_2) {
+        if (cig.front().second == 'S' && cig.front().first >= 10) {
             int el = cig.front().first;
-            int sp = ref.seedUnique(reverseComplement(seq.substr(0, el)).substr(0, Reference::SEED_2));
-            if (sp > 0 && std::abs(position - sp) < 2 * maxReadLength) {
-                cig.erase(cig.begin()); seq = seq.substr(el); qual.erase(qual.begin(), qual.begin() + el);
+            if (el >= Reference::SEED_2) {
+                int sp = ref.seedUnique(reverseComplement(seq.substr(0, el)).substr(0, Reference::SEED_2));
+                if (sp > 0 && std::abs(position - sp) < 2 * maxReadLength) {
+                    cig.erase(cig.begin()); seq = seq.substr(el); qual.erase(qual.begin(), qual.begin() + el);
+                }
             }
-        } else if (cig.back().second == 'S' && cig.back().first >= Reference::SEED_2) {
+        } else if (cig.back().second == 'S' && cig.back().first >= 10) {
             int el = cig.back().first;
-            std::string rc = reverseComplement(seq.substr(seq.size() - el, el));
-            int sp = ref.seedUnique(rc.substr(rc.size() - Reference::SEED_2, Reference::SEED_2));
-            if (sp > 0 && std::abs(position - sp) < 2 * maxReadLength) {
-                cig.pop_back(); seq = seq.substr(0, seq.size() - el); qual.resize(qual.size() - el);
+            if (el >= Reference::SEED_2) {
+                std::string rc = reverseComplement(seq.substr(seq.size() - el, el));
+                int sp = ref.seedUnique(rc.substr(rc.size() - Reference::SEED_2, Reference::SEED_2));
+                if (sp > 0 && std::abs(position - sp) < 2 * maxReadLength) {
+                    cig.pop_back(); seq = seq.substr(0, seq.size() - el); qual.resize(qual.size() - el);
+                }
             }
         }
     }

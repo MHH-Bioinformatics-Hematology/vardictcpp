@@ -13,6 +13,7 @@
 
 namespace vardict {
 
+
 static inline char baseChar(const bam1_t* b, int qpos) {
     static const char code[] = "=ACMGRSVTWYHKDBN";
     return code[bam_seqi(bam_get_seq(b), qpos)];
@@ -118,12 +119,19 @@ static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
     bool mateForward = (c.flag & 0x20) == 0;
     int mateDirNum = mateForward ? 1 : -1;
     long mlen = c.isize;
+    // MC (mate soft-clipped at both ends) / MQ (mate MAPQ < 15) filters. In VarDict these are the first
+    // two `else if` arms of the SAME-CHROMOSOME branch (prepareSVStructuresForAnalysis 2035-2040); they
+    // suppress only the same-chrom deletion/duplication/inversion clustering, NOT the inter-chromosomal
+    // translocation branch. Computing them as flags (rather than returning up-front) keeps translocation
+    // disc bumps for MC/MQ-flagged inter-chrom reads, matching Java -- an early return here under-counted
+    // svfinv/svfdel disc, which let the SV false-positive filter miss real chimeric inversions.
+    bool mcSkip = false, mqSkip = false;
     if (uint8_t* mc = bam_aux_get(const_cast<bam1_t*>(b), "MC")) {
         const char* s = bam_aux2Z(mc);
-        if (s) { int cntS = 0; for (const char* p = s; *p; ++p) if (*p == 'S') cntS++; if (cntS >= 2) return; }
+        if (s) { int cntS = 0; for (const char* p = s; *p; ++p) if (*p == 'S') cntS++; if (cntS >= 2) mcSkip = true; }
     }
     if (uint8_t* mq = bam_aux_get(const_cast<bam1_t*>(b), "MQ")) {
-        if ((int)bam_aux2i(mq) < 15) return;
+        if ((int)bam_aux2i(mq) < 15) mqSkip = true;
     }
     const double qAtBase = bqual[Config::MINMAPBASE];
     const double Qmean = c.qual;
@@ -170,8 +178,8 @@ static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
                 if (!out.svrinv3.empty() && start - out.svinvrend3 <= Config::MINSVPOS) out.svrinv3.back().disc++;
             }
         }
-    } else if (readDirNum * mateDirNum == -1 && (mlen * readDirNum) > 0 && lqseq > Config::MINMAPBASE) {
-        // deletion candidate
+    } else if (!mcSkip && !mqSkip && readDirNum * mateDirNum == -1 && (mlen * readDirNum) > 0 && lqseq > Config::MINMAPBASE) {
+        // deletion candidate (same-chrom SV clustering is suppressed for MC/MQ-flagged mates)
         mlen = mateStart > start ? (long)mend - start : (long)end - mateStart;
         if (std::labs(mlen) > (long)cfg.INSSIZE + (long)cfg.INSSTDAMT * cfg.INSSTD) {
             if (readDirNum == 1) {
@@ -194,8 +202,8 @@ static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
             if (!out.svfinv3.empty() && std::abs(start - out.svinvfend3) <= MIN_D) out.svfinv3.back().disc++;
             if (!out.svrinv3.empty() && std::abs(start - out.svinvrend3) <= MIN_D) out.svrinv3.back().disc++;
         }
-    } else if (readDirNum * mateDirNum == -1 && readDirNum * mlen < 0 && lqseq > Config::MINMAPBASE) {
-        // duplication candidate
+    } else if (!mcSkip && !mqSkip && readDirNum * mateDirNum == -1 && readDirNum * mlen < 0 && lqseq > Config::MINMAPBASE) {
+        // duplication candidate (same-chrom SV clustering is suppressed for MC/MQ-flagged mates)
         if (readDirNum == 1) {
             openIfNeeded(out.svfdup, start, out.svdupfend, CDIST);
             addSVMate(out.svfdup.back(), start, end, mateStart, mend, readDirNum, totalLen,
@@ -215,8 +223,8 @@ static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
         if (!out.svrinv5.empty() && std::abs(start - out.svinvrend5) <= MIN_D) out.svrinv5.back().disc++;
         if (!out.svfinv3.empty() && std::abs(start - out.svinvfend3) <= MIN_D) out.svfinv3.back().disc++;
         if (!out.svrinv3.empty() && std::abs(start - out.svinvrend3) <= MIN_D) out.svrinv3.back().disc++;
-    } else if (readDirNum * mateDirNum == 1 && lqseq > Config::MINMAPBASE) {
-        // inversion candidate (read and mate same orientation)
+    } else if (!mcSkip && !mqSkip && readDirNum * mateDirNum == 1 && lqseq > Config::MINMAPBASE) {
+        // inversion candidate (read and mate same orientation; suppressed for MC/MQ-flagged mates)
         if (readDirNum == 1 && mlen != 0) {
             if (mlen < -3L * maxRL) {
                 openIfNeeded(out.svfinv3, start, out.svinvfend3, CDIST);
@@ -249,6 +257,40 @@ static void prepareSVStructures(const bam1_t* b, const Cig& cigv, int start,
             if (!out.svrdup.empty() && (start - out.svduprend) <= MIN_D) out.svrdup.back().disc++;
         }
     }
+}
+
+// CigarParser.isReadChimericWithSA (Java 2271-2299): true iff the read carries an SA (supplementary
+// alignment) tag whose first record maps to a nearby position on the SAME contig in the OPPOSITE
+// orientation and whose CIGAR carries a matching-side soft-clip. The clip is then a chimeric artefact
+// of library construction and processSoftClip returns without storing/counting it. `position` is the
+// (modifyCigar-adjusted) read alignment start; `dir` is the read's reverse-strand flag.
+static bool isReadChimericWithSA(const bam1_t* b, int position, bool dir, bool is5Side,
+                                 int maxReadLength, bam_hdr_t* hdr) {
+    uint8_t* sa = bam_aux_get(const_cast<bam1_t*>(b), "SA");
+    if (!sa) return false;
+    const char* saStr = bam_aux2Z(sa);
+    if (!saStr) return false;
+    const char* p = saStr;               // first SA record: chrom,pos,strand,cigar,mapq,nm;
+    auto field = [&](std::string& o) { o.clear(); while (*p && *p != ',' && *p != ';') o += *p++; if (*p == ',') p++; };
+    std::string saChrom, saPosS, saStrand, saCigar;
+    field(saChrom); field(saPosS); field(saStrand); field(saCigar);
+    if (saChrom.empty() || saPosS.empty() || saStrand.empty() || saCigar.empty()) return false;
+    int saPos = atoi(saPosS.c_str());
+    bool saForward = (saStrand == "+");
+    auto isDig = [](char c) { return c >= '0' && c <= '9'; };
+    bool cigMatch;
+    if (is5Side) {                       // SA_CIGAR_D_S_5clip = ^\d\d+S (leading 2+ digit soft-clip)
+        int i = 0; while (i < (int)saCigar.size() && isDig(saCigar[i])) i++;
+        cigMatch = (i >= 2 && i < (int)saCigar.size() && saCigar[i] == 'S');
+    } else {                             // SA_CIGAR_D_S_3clip = \d\dS$ (trailing 2+ digit soft-clip)
+        int n = (int)saCigar.size();
+        cigMatch = (n >= 3 && saCigar[n - 1] == 'S' && isDig(saCigar[n - 2]) && isDig(saCigar[n - 3]));
+    }
+    const char* rn = sam_hdr_tid2name(hdr, b->core.tid);
+    std::string readChrom = rn ? rn : "";
+    bool dirMatch = (dir && saForward) || (!dir && !saForward);
+    return dirMatch && saChrom == readChrom
+           && (std::abs(saPos - position) < 2 * maxReadLength) && cigMatch;
 }
 
 bool CigarParser::process(const Region& region, VariationData& out, bool reloadMode) {
@@ -411,6 +453,7 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
             if (paired && mateUnmapped) { /* potential insertion: not ported */ }
             else if (c.qual > 10) prepareSVStructures(b, cigv, rpos, bqual, c.l_qseq, reverse, nm, out, cfg_, hdr);
         }
+
 
         int qpos = 0;           // 0-based query offset (includes soft-clip)
 
@@ -872,14 +915,38 @@ bool CigarParser::process(const Region& region, VariationData& out, bool reloadM
                 rpos += len;
                 break;
             case 'S': {
-                // Faithful port of processSoftClip's mis-softclip re-matching + consensus storage
-                // (chimeric SEED/SA detection is omitted; conf.chimeric defaults off and the seed
-                // map is not built). The re-matching converts soft-clipped bases that actually match
-                // the reference into reference-allele counts + coverage, which affects depth/AF near
-                // clips; the remaining high-quality bases are stored as a soft-clip consensus for
-                // realignment.
+                // Faithful port of processSoftClip's mis-softclip re-matching + consensus storage.
+                // The re-matching converts soft-clipped bases that actually match the reference into
+                // reference-allele counts + coverage, which affects depth/AF near clips; the remaining
+                // high-quality bases are stored as a soft-clip consensus for realignment.
                 bool isFivePrime = (k == 0);
                 bool isThreePrime = (k == cigv.size() - 1);
+                // Ignore large soft clips from chimeric reads (processSoftClip prologue, CigarParser
+                // 1124-1162 / 1210-1242): when NOT in chimeric mode, drop the clip entirely if either
+                // (a) it is >= 20 bp and the read's SA tag marks it as a chimeric reciprocal mapping,
+                // or (b) it is >= SEED_1 (17) bp and its reverse-complement seeds uniquely near the
+                // read. Skipping keeps a chimeric soft-clip out of the consensus/coverage, matching
+                // VarDict (previously omitted, which polluted 3'/5' soft-clip consensus + depth).
+                if ((isFivePrime || isThreePrime) && !cfg_.chimeric) {
+                    bool is5 = isFivePrime;
+                    uint8_t* saTag = bam_aux_get(b, "SA");
+                    bool skipClip = false;
+                    if (len >= 20 && saTag) {
+                        skipClip = isReadChimericWithSA(b, readStart, reverse, is5, out.maxReadLength, hdr);
+                    } else if (len >= Reference::SEED_1) {
+                        int refCursor = is5 ? readStart : rpos;   // Java `start` at this clip
+                        int sp;
+                        if (is5) {
+                            std::string s = reverseComplement(bseq.substr(0, len));
+                            sp = ref_.seedUnique(s.substr(0, Reference::SEED_1));
+                        } else {
+                            std::string rc = reverseComplement(bseq.substr(bseq.size() - len, len));
+                            sp = ref_.seedUnique(rc.substr(rc.size() - Reference::SEED_1, Reference::SEED_1));
+                        }
+                        if (sp > 0 && std::abs(refCursor - sp) < 2 * out.maxReadLength) skipClip = true;
+                    }
+                    if (skipClip) { qpos += len; carryOffset = 0; break; }
+                }
                 if (isFivePrime) {
                     int st = rpos;   // aligned start (VarDict 'start' == position)
                     int el = len;    // remaining soft-clip length
