@@ -1,60 +1,88 @@
 # vardictcpp 1
 
-First release of **vardictcpp** — a C++17 port of [VarDict](https://github.com/AstraZeneca-NGS/VarDictJava)
-(AstraZeneca-NGS VarDictJava 1.8.3), built on htslib. It reproduces VarDict's variant calls while running
-several times faster and using an order of magnitude less memory.
+First release of **vardictcpp**, a C++17 reimplementation of
+[VarDict](https://github.com/AstraZeneca-NGS/VarDictJava) (AstraZeneca-NGS VarDictJava 1.8.3) built on
+htslib. It reproduces VarDict's variant calls byte-for-byte while running several times faster and using
+roughly an order of magnitude less memory.
 
 ## Highlights
-- **Simple mode is byte-identical** to VarDictJava 1.8.3 on the curated golden (0 FP / 0 FN), enforced
-  in CI. **`--fisher`, amplicon, and structural variants** (`<DEL>` discordant-pair, `<INV>` split-read)
-  are ported and enabled; **paired somatic** runs the pipeline on both BAMs and compares them (all 56
-  rows byte-identical to Java on the test pair, incl. `combineAnalysis`). See *Known limitations*.
-- **Faster and far leaner** than stock VarDictJava (see below).
-- **Streaming, region-parallel** (`-th`) with ordered output identical to single-threaded; optional
+- **Byte-identical to VarDictJava 1.8.3** across all ported modes on five whole-exome samples
+  (91,288 variant rows, 0 FP / 0 FN) plus per-mode golden fixtures enforced in CI.
+- **Full mode coverage**: simple, amplicon, `--fisher`, structural variants (`<INV>`, `<DEL>`, `<DUP>`
+  including discordant pairs and inter-chromosomal fusion clusters), paired somatic (both BAMs compared,
+  including the merged-region `combineAnalysis` refinement), and splice-junction handling.
+- **Independently accuracy-validated** against a public truth set (GIAB HG002, NIST v4.2.1), where
+  vardictcpp and VarDictJava produce identical calls.
+- **Faster and far leaner** than stock VarDictJava (numbers below).
+- **Streaming and region-parallel** (`-th`) with output identical to single-threaded; optional
   `--chunk` bounds memory on very large regions.
-- Drop-in CLI: accepts VarDict's option syntax; VarDict simple-mode TSV column order.
+- **Portable SIMD** (SSE2 on x86-64, NEON on ARM/Apple Silicon, scalar fallback), every kernel
+  bit-for-bit equal to its scalar form. CI builds and tests on Linux and macOS, x86-64 and ARM.
+- Drop-in CLI: accepts VarDict's option syntax and emits VarDict's TSV column order (pipe straight into
+  `teststrandbias.R` / `var2vcf_valid.pl`).
+
+## Correctness (parity with VarDictJava 1.8.3)
+- **Byte-identical on all five WES samples tested**, zero differing lines versus single-threaded
+  VarDictJava 1.8.3 (multi-threaded Java output is non-deterministic, so single-threaded is the
+  reference):
+
+  | Sample | Target regions | Variant rows | Byte-identical |
+  |---|---:|---:|---:|
+  | SRR15006386 | 11,732 | 4,014 | 4,014 (100%) |
+  | SRR15006375 | 12,292 | 4,056 | 4,056 (100%) |
+  | SRR15006376 | 105,949 | 12,739 | 12,739 (100%) |
+  | SRR15006540 | 135,145 | 16,031 | 16,031 (100%) |
+  | SRR8657348 (MV4-11 / CCLE) | 773,667 | 54,448 | 54,448 (100%) |
+  | **Total** | | **91,288** | **91,288 (100%)** |
+
+- Reaching this drove the full structural-variant subsystems, large-indel coverage reloads, the
+  reference `SEED_1` extent truncation, and the CigarModifier soft-clip/homopolymer fixes.
+- Every divergence found during development was triaged read-by-read against **both** VarDictJava and
+  the original Perl: each proved to be a vardictcpp bug corrected toward the reference, so
+  `docs/DIVERGENCES.md` has no open entries. Two latent correctness bugs surfaced in the process (an
+  output-buffer overflow that silently dropped large-allele variant lines, and a soft-clip read filter
+  applied to the pre-modification CIGAR) and are fixed.
+- Other WES samples are not exhaustively verified; new data may surface further edge cases.
+
+## Accuracy against ground truth
+Validated on the GIAB HG002 chromosome-20 exome (Agilent SureSelect v5) against the NIST v4.2.1
+benchmark with `rtg vcfeval` over callable confident regions (germline operating point: PASS,
+allele frequency >= 0.2). vardictcpp and VarDictJava emit **byte-identical VCFs** here as well
+(8,244 variants, 0 differing lines), so both share exactly the same accuracy:
+
+| Variant class | Precision | Recall | F1 |
+|---|---:|---:|---:|
+| SNV | 0.996 | 0.974 | 0.985 |
+| Indel | 0.877 | 0.734 | 0.799 |
+| All | 0.984 | 0.966 | 0.975 |
 
 ## Performance vs stock VarDictJava 1.8.3
-Real whole-exome data (3 public SRA runs aligned to hg19, covered-target BED, `-f 0.01`), peak RSS via
-`/usr/bin/time -v`:
+Real whole-exome data (public SRA runs aligned to hg19, covered-target BED, `-f 0.01`), CPU-pinned,
+median of 5 clean replicate runs, peak RSS via `/usr/bin/time -v`, VarDictJava on JDK 25 with `-Xmx 8g`:
 
-| metric | single thread | 4 threads |
-|---|---|---|
-| **Speed** (wall, Java ÷ C++) | **4.4× faster** (mean) | **7.6× faster** (mean) |
-| per-sample speedup range | 4.2–4.9× | 6.9–8.4× |
-| **Peak memory** (Java ÷ C++) | **30–69× less** | **14–31× less** |
-| absolute peak RSS | C++ 60–120 MB vs Java 1.9–5.0 GB | C++ ~0.2 GB vs Java 2.8–5.4 GB |
+| Threads | Speedup (Java / cpp) | Peak RSS (cpp) | Peak RSS (Java) | RSS reduction |
+|---|---|---|---|---|
+| 1 | 3.7 to 4.8x | 74 to 122 MB | ~1.0 to 1.3 GB | 8 to 17x |
+| 8 | 9 to 11x | 252 to 358 MB | ~2.1 to 2.6 GB | 7 to 8x |
 
-On the CI fixture the same effect is visible in miniature: **~10× faster, ~50× less peak memory**. The
-memory advantage grows with region size — on a 1 Mb region at `-f 0` VarDict retains every covered
-base × allele, where the native implementation stays flat instead of scaling into multiple GB.
-
-## Correctness
-- **Simple mode is byte-identical** to VarDictJava 1.8.3 on the curated golden (0 FP / 0 FN), enforced
-  in CI on every push (gcc + clang; the CI parity test covers simple mode).
-- On real whole-exome data, **byte-identical to Java on all five samples tested**, zero differing lines
-  vs single-threaded VarDict-Java 1.8.3: SRR15006386 (4014/4014), SRR15006375 (4056/4056), SRR15006376
-  (12739/12739), SRR15006540 (16031/16031), and the 774k-region CCLE run SRR8657348 (54448/54448).
-  Reaching this drove the full structural-variant subsystems (`<INV>`/`<DEL>`/`<DUP>` incl. discordant
-  pairs and inter-chromosomal fusion clusters), large-indel coverage reloads, the reference `SEED_1`
-  extent truncation, and the CigarModifier soft-clip/homopolymer fixes. Divergences were triaged for
-  *correctness* against both Java and the original Perl: every one proved to be a cpp bug fixed toward
-  the reference, so `docs/DIVERGENCES.md` has no open entries. (Other WES samples are not exhaustively
-  verified; new data may surface further edge cases.)
-- **Performance/memory** on those samples: ~3.5–4.7x faster single-core, ~10–12x at 8 threads, and ~14x
-  less peak RAM (77–122 MB vs Java's 1.1–1.7 GB).
+The memory advantage grows with region size: at `-f 0` VarDict retains every covered base times allele,
+whereas vardictcpp streams one record at a time and stores the reference as disjoint windows matching
+Java's reference map, so a distant realignment breakpoint never gap-fills a multi-megabase span.
 
 ## Build & test
-- Requires a C++17 compiler, CMake ≥ 3.15, and htslib:
+- Requires a C++17 compiler, CMake >= 3.15, and htslib:
   `cmake -S . -B build -DHTSLIB_ROOT=$CONDA_PREFIX && cmake --build build -j`
-- `bash test/run_tests.sh` — parity against a self-contained VarDictJava golden fixture.
-- GitHub Actions CI: gcc/clang build + parity test, plus a runtime & memory benchmark vs VarDictJava.
+- `bash test/run_tests.sh`: parity against self-contained VarDictJava golden fixtures (all modes).
+- GitHub Actions CI (Linux + macOS, x86-64 + ARM): gcc/clang build + parity tests, plus a runtime and
+  memory benchmark vs VarDictJava.
+- `-DVARDICTCPP_NATIVE=ON` enables `-march=native`; the default build stays portable.
+
+## License
+MIT, retaining the upstream AstraZeneca-NGS VarDictJava copyright. See `LICENSE` and `NOTICE`.
 
 ## Known limitations
-- **Paired somatic** runs the pipeline on both BAMs and compares them, **byte-identical to Java** on the
-  test tumor|normal pair (all 56 rows), including `combineAnalysis` (the merged `bam1+bam2` refinement),
-  verified on a fixture that provably triggers it.
-- Real-WES parity is byte-identical on all five verified samples (see Correctness); other samples are
-  not exhaustively verified.
-- Splice junctions are handled (N-op intron spans reject splice-junction deletions in isGoodVar,
-  verified against Java on a synthetic spliced fixture).
+- Real-WES parity is byte-identical on the five verified samples; other samples are not exhaustively
+  verified.
+- The ground-truth accuracy benchmark is chromosome 20 only (to bound compute); it characterises
+  VarDict's accuracy, which the port inherits byte-identically, and is not a novel-accuracy claim.
+- `--chunk` is opt-in; without it a single very large `-R` region is one work unit (as in VarDictJava).
