@@ -1,5 +1,6 @@
 #include "somatic.hpp"
 #include "util.hpp"   // Perl-style substr (negative-index) used by adjComplex
+#include "fisher.hpp"
 #include <cstdio>
 #include <cctype>
 #include <cmath>
@@ -182,6 +183,41 @@ static std::string combineAnalysis(const Config& cfg, const CombineFn& combine,
     return "";
 }
 
+// --fisher mode flag (set from cfg.fisher in appendSomaticRegion; constant across threads).
+static bool g_somaticFisher = false;
+
+// Fisher-mode numeric formatting, matching getRoundedValueToPrint: pre-round to N dp (roundHalfEven),
+// then integral -> "%.0f" else "%.*f" with trailing zeros stripped.
+static double rheFs(int d, double v) { char b[64]; std::snprintf(b, sizeof(b), "%.*f", d, v); return std::atof(b); }
+static std::string getRndFs(int d, double v) {
+    v = rheFs(d, v);
+    char b[64];
+    if (v == std::floor(v + 0.5)) { std::snprintf(b, sizeof(b), "%.0f", v); return b; }
+    std::snprintf(b, sizeof(b), "%.*f", d, v);
+    std::string s(b); s.erase(s.find_last_not_of('0') + 1); return s;
+}
+
+// The 20-field fisher per-sample block: the 18 base fields (getRoundedValueToPrint formatting) plus the
+// strand-bias Fisher p-value + odds-ratio (SomaticOutputVariant.create_somatic_variant_61columns).
+static std::string blockFisher(const Variant* v) {
+    FisherExact fisher(v ? v->refFwd : 0, v ? v->refRev : 0, v ? v->varFwd : 0, v ? v->varRev : 0);
+    std::string pv  = getRndFs(5, fisher.getPValue());
+    std::string orr = fisher.getOddRatio();
+    if (!v) return std::string("0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t") + pv + "\t" + orr;
+    std::string geno = v->genotype.empty() ? "0" : v->genotype;
+    std::string bias = v->bias.empty() ? "0" : v->bias;
+    std::vector<char> buf(320 + geno.size() + bias.size() + pv.size() + orr.size());
+    std::snprintf(buf.data(), buf.size(),
+        "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+        v->totalPosCoverage, v->varsCount, v->refFwd, v->refRev, v->varFwd, v->varRev,
+        geno.c_str(), getRndFs(4, v->frequency).c_str(), bias.c_str(),
+        getRndFs(1, v->pmean).c_str(), v->pstd, getRndFs(1, v->qmean).c_str(), v->qstd,
+        getRndFs(1, v->mapq).c_str(), getRndFs(3, v->qratio).c_str(),
+        getRndFs(4, v->hifreq).c_str(), getRndFs(4, v->extrafreq).c_str(), getRndFs(1, v->nm).c_str(),
+        pv.c_str(), orr.c_str());
+    return buf.data();
+}
+
 // The 18-field per-sample block (Depth..NM). A null slot prints 18 zeros (matching a null Variant).
 static std::string block(const Variant* v) {
     if (!v) return "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0";
@@ -217,7 +253,7 @@ static void printSomatic(std::string& out, const std::string& sample, const Regi
         begin->startPosition, begin->endPosition, begin->refallele.c_str(), begin->varallele.c_str());
     std::vector<char> tail(256 + leftS.size() + rightS.size() + label.size()
                            + begin->vartype.size() + region.chr.size() + sv1.size() + sv2.size());
-    std::snprintf(tail.data(), tail.size(), "\t%d\t%s\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+    std::snprintf(tail.data(), tail.size(), "\t%d\t%s\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\t%s\t%s\t%s",
         end ? end->shift3 : 0, end ? fmt(end->msi, "%.3f").c_str() : "0", end ? end->msint : 0,
         leftS.c_str(), rightS.c_str(),
         region.chr.c_str(), region.start, region.end,
@@ -225,10 +261,21 @@ static void printSomatic(std::string& out, const std::string& sample, const Regi
         tumor ? fmt(tumor->duprate, "%.1f").c_str() : "0", sv1.empty() ? "0" : sv1.c_str(),
         normal ? fmt(normal->duprate, "%.1f").c_str() : "0", sv2.empty() ? "0" : sv2.c_str());
     out += head.data();
-    out += block(tumor);
+    out += g_somaticFisher ? blockFisher(tumor) : block(tumor);
     out += "\t";
-    out += block(normal);
+    out += g_somaticFisher ? blockFisher(normal) : block(normal);
     out += tail.data();
+    if (g_somaticFisher) {
+        // Combined tumor-vs-normal Fisher (SomaticOutputVariant.calculateFisherSomatic): 2x2 of
+        // tumor/normal variant vs reference coverage; the reported p-value is min(less, greater).
+        int tvar = tumor ? tumor->varsCount : 0,  ttot = tumor  ? tumor->totalPosCoverage  : 0;
+        int nvar = normal ? normal->varsCount : 0, ntot = normal ? normal->totalPosCoverage : 0;
+        int tref = std::max(0, ttot - tvar), rref = std::max(0, ntot - nvar);
+        FisherExact cf(tvar, tref, nvar, rref);
+        double pl = cf.getPValueLess(), pg = cf.getPValueGreater();
+        out += "\t"; out += getRndFs(5, pl < pg ? pl : pg); out += "\t"; out += cf.getOddRatio();
+    }
+    out += "\n";
 }
 
 // Lookups mirroring getVarMaybe(vars, varn, nt) and getVarMaybe(vars, var, 0).
@@ -394,6 +441,7 @@ void appendSomaticRegion(std::string& out, const Config& cfg, const Region& regi
                          const std::vector<SomaticPosition>& tumor,
                          const std::vector<SomaticPosition>& normal,
                          const CombineFn& combine) {
+    g_somaticFisher = cfg.fisher;
     std::string sample = cfg.sample;
     if (!cfg.sample2.empty()) sample += "|" + cfg.sample2;
 

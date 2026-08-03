@@ -1,5 +1,6 @@
 #include "amplicon.hpp"
 #include "util.hpp"
+#include "fisher.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -154,6 +155,75 @@ static std::string fmt(double v, const char* pat) {
     return buf;
 }
 
+// Fisher-mode helpers, identical to printer.cpp's simple-fisher formatting (getRoundedValueToPrint:
+// integral -> "0"/"%.0f", else "%.*f" with trailing zeros stripped; roundHalfEven pre-rounds to N dp).
+static double rheF(int d, double v) { char b[64]; std::snprintf(b, sizeof(b), "%.*f", d, v); return std::atof(b); }
+static std::string getRndF(int d, double v) {
+    char b[64];
+    if (v == std::floor(v + 0.5)) { std::snprintf(b, sizeof(b), "%.0f", v); return b; }
+    std::snprintf(b, sizeof(b), "%.*f", d, v);
+    std::string s(b); s.erase(s.find_last_not_of('0') + 1); return s;
+}
+
+// AmpliconOutputVariant.create_amplicon_variant_40columns: the 38-column row with the strand-bias
+// Fisher p-value + odds-ratio inserted after QStd, and numeric fields switched to getRoundedValueToPrint.
+static void appendAmpliconRowFisher(std::string& out, const Config& cfg, const Region& rg,
+                                    const Variant& v, const std::string& seg,
+                                    int goodVariantsCount, int totalVariantsCount, int noCoverage, bool flag) {
+    FisherExact fisher(v.refFwd, v.refRev, v.varFwd, v.varRev);
+    std::string pvalue = getRndF(5, fisher.getPValue());
+    std::string oddratio = fisher.getOddRatio();
+    std::string af    = getRndF(4, rheF(4, v.frequency));
+    std::string pmean = getRndF(1, rheF(1, v.pmean));
+    std::string qmean = getRndF(1, rheF(1, v.qmean));
+    std::string mq    = getRndF(1, rheF(1, v.mapq));
+    std::string sn    = getRndF(3, v.qratio);
+    std::string hiaf; if (v.hifreq == 0) hiaf = "0"; else { char h[64]; std::snprintf(h, sizeof(h), "%.4f", v.hifreq); hiaf = h; }
+    std::string exaf  = getRndF(4, v.extrafreq);
+    std::string msi   = getRndF(3, v.msi);
+    // nm_f: fixed DecimalFormat("0.0"), not stripped (matches Java's create_amplicon_variant_40columns).
+    std::string nm    = "0";
+    if (v.nm > 0) { char n[64]; std::snprintf(n, sizeof(n), "%.1f", v.nm); nm = n; }
+    const char* geno  = v.genotype.empty() ? "0" : v.genotype.c_str();
+    const char* bias  = v.bias.empty() ? "0" : v.bias.c_str();
+    std::vector<char> buf(768 + cfg.sample.size() + rg.gene.size() + rg.chr.size()
+                          + v.refallele.size() + v.varallele.size() + v.genotype.size()
+                          + v.leftseq.size() + v.rightseq.size() + seg.size() + v.vartype.size()
+                          + pvalue.size() + oddratio.size());
+    std::snprintf(buf.data(), buf.size(),
+        "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t"
+        "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n",
+        cfg.sample.c_str(), rg.gene.c_str(), rg.chr.c_str(),
+        v.startPosition, v.endPosition, v.refallele.c_str(), v.varallele.c_str(),
+        v.totalPosCoverage, v.varsCount, v.refFwd, v.refRev, v.varFwd, v.varRev,
+        geno, af.c_str(), bias, pmean.c_str(), v.pstd, qmean.c_str(), v.qstd,
+        pvalue.c_str(), oddratio.c_str(),
+        mq.c_str(), sn.c_str(), hiaf.c_str(), exaf.c_str(),
+        v.shift3, msi.c_str(), v.msint, nm.c_str(), v.hicnt, v.hicov,
+        v.leftseq.empty() ? "0" : v.leftseq.c_str(), v.rightseq.empty() ? "0" : v.rightseq.c_str(),
+        seg.c_str(), v.vartype.c_str(), goodVariantsCount, totalVariantsCount, noCoverage, flag ? 1 : 0);
+    out += buf.data();
+}
+
+// Reference-only row in fisher mode: FisherExact(0,0,0,0).
+static void appendAmpliconRefRowFisher(std::string& out, const Config& cfg, const Region& rg,
+                                       int position, int noCoverage) {
+    std::string seg = rg.chr + ":" + std::to_string(position) + "-" + std::to_string(position);
+    FisherExact fisher(0, 0, 0, 0);
+    std::string pvalue = getRndF(5, fisher.getPValue());
+    std::string oddratio = fisher.getOddRatio();
+    char buf[1200];
+    std::snprintf(buf, sizeof(buf),
+        "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t"
+        "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\n",
+        cfg.sample.c_str(), rg.gene.c_str(), rg.chr.c_str(), position, position, "", "",
+        0, 0, 0, 0, 0, 0, "", "0", "0;0", "0", 0, "0", 0,
+        pvalue.c_str(), oddratio.c_str(),
+        "0", "0", "0", "0", 0, "0", 0, "0", 0, 0,
+        "0", "0", seg.c_str(), "", 0, 0, noCoverage, 0);
+    out += buf;
+}
+
 // AmpliconOutputVariant.create_amplicon_variant_38columns
 static void appendAmpliconRow(std::string& out, const Config& cfg, const Region& rg,
                               const Variant& variant, const std::string& seg,
@@ -303,7 +373,8 @@ void appendAmpliconSegment(std::string& out, const Config& cfg, const std::vecto
                 if (!ref.empty()) {
                     vrefList.push_back(ref[0]);
                 } else {
-                    appendAmpliconRefRow(out, cfg, rg, position, nocov);
+                    if (cfg.fisher) appendAmpliconRefRowFisher(out, cfg, rg, position, nocov);
+                    else appendAmpliconRefRow(out, cfg, rg, position, nocov);
                     continue;
                 }
             } else {
@@ -369,7 +440,8 @@ void appendAmpliconSegment(std::string& out, const Config& cfg, const std::vecto
                               ? goodVariants[0].second
                               : rg.chr + ":" + std::to_string(position) + "-" + std::to_string(position);
             int totalVariantsCount = currentGvscnt + (int)badVariants.size();
-            appendAmpliconRow(out, cfg, rg, vref, seg, currentGvscnt, totalVariantsCount, nocov, flag);
+            if (cfg.fisher) appendAmpliconRowFisher(out, cfg, rg, vref, seg, currentGvscnt, totalVariantsCount, nocov, flag);
+            else appendAmpliconRow(out, cfg, rg, vref, seg, currentGvscnt, totalVariantsCount, nocov, flag);
         }
     }
 }

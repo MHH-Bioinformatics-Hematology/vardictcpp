@@ -11,6 +11,8 @@ class FisherExact {
 public:
     FisherExact(int refFwd, int refRev, int altFwd, int altRev);
     double getPValue() const;      // two-sided p-value, rounded as R (5 decimals)
+    double getPValueLess() const;    // one-sided P(X <= x), rounded as R
+    double getPValueGreater() const; // one-sided P(X >= x), rounded as R
     std::string getOddRatio() const; // conditional MLE odds ratio, formatted as VarDict prints it
 
 private:
