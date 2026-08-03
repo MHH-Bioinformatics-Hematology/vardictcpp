@@ -798,6 +798,52 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
         int hicov = 0;
         for (const auto& [al, v] : alleleMap) hicov += v.highQualityReadsCount;
 
+        // createInsertion coverage reconciliation, identical to callVariants (lines 336-391): an
+        // insertion at this position (especially an '&' complex insertion) re-bases the running
+        // position coverage on position+1, so the Depth of every variant here is finalTotalCov, the
+        // per-insertion frequency denominator is insTtcov[allele], and the dominant insertion's fwd/rev
+        // are subtracted from the pos+1 reference variant (refFwdOut/refRevOut). callVariantsSomatic
+        // previously omitted all of this and used raw refCoverage, over-reporting Depth for complex
+        // insertions (e.g. chr1:1647969 GAG>ATGAA read 200 instead of 160).
+        int finalTotalCov = totalCov;
+        int refFwdOut = refVar ? refVar->varsCountOnForward : 0;
+        int refRevOut = refVar ? refVar->varsCountOnReverse : 0;
+        std::map<std::string,int> insTtcov;
+        {
+            auto c1it = vd.refCoverage.find(position + 1);
+            int cov1 = (c1it != vd.refCoverage.end()) ? c1it->second : -1;
+            int subFwd = 0, subRev = 0;
+            auto insR = vd.insertionVariants.find(position);
+            if (insR != vd.insertionVariants.end()) {
+                int runningCov = totalCov;
+                for (const auto& [al, vv] : insR->second) {     // std::map sorted == Java Collections.sort
+                    if (al.find('&') != std::string::npos && cov1 >= 0) runningCov = cov1;
+                    int ttcov = runningCov;
+                    if (vv.varsCount > runningCov && vv.extracnt != 0 && vv.varsCount - runningCov < vv.extracnt) ttcov = vv.varsCount;
+                    if (ttcov < vv.varsCount) {
+                        ttcov = vv.varsCount;
+                        if (cov1 >= 0 && ttcov < cov1 - vv.varsCount) {
+                            ttcov = cov1;
+                            subFwd += vv.varsCountOnForward; subRev += vv.varsCountOnReverse;
+                        }
+                        runningCov = ttcov;
+                    }
+                    insTtcov[al] = ttcov;
+                }
+                finalTotalCov = runningCov;
+            }
+            if (finalTotalCov > totalCov) {   // totalCov == refCoverage[position]
+                auto p1 = vd.nonInsertionVariants.find(position + 1);
+                if (p1 != vd.nonInsertionVariants.end() && ref.has(position + 1)) {
+                    auto rv1 = p1->second.find(std::string(1, ref.at(position + 1)));
+                    if (rv1 != p1->second.end()) {
+                        refFwdOut = rv1->second.varsCountOnForward - subFwd;
+                        refRevOut = rv1->second.varsCountOnReverse - subRev;
+                    }
+                }
+            }
+        }
+
         // genotype1: identical to callVariants.
         std::string positionGenotype1;
         {
@@ -1094,13 +1140,22 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             int insHicov = hicov;
             for (const auto& [allele, v] : insIt->second) {   // std::map sorted == Java Collections.sort
                 if (insHicov < v.highQualityReadsCount) insHicov = v.highQualityReadsCount;
-                double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
+                // Depth is the reconciled finalTotalCov; the frequency/extraFrequency denominator is the
+                // per-insertion insTtcov (ToVarsBuilder.createInsertion), which can exceed the position
+                // Depth. refFwd/refRev are re-sourced (refFwdOut/refRevOut) exactly like the simple builder.
+                auto ttIt = insTtcov.find(allele);
+                int insCov = (ttIt != insTtcov.end()) ? ttIt->second : totalCov;
+                double af = insCov > 0 ? (double)v.varsCount / (double)insCov : 0.0;
                 Variant var;
                 var.startPosition = position; var.endPosition = position;
-                var.totalPosCoverage = totalCov; var.varsCount = v.varsCount;
+                var.totalPosCoverage = finalTotalCov; var.varsCount = v.varsCount;
                 var.varFwd = v.varsCountOnForward; var.varRev = v.varsCountOnReverse;
-                if (refVar) { var.refFwd = refVar->varsCountOnForward; var.refRev = refVar->varsCountOnReverse; }
+                var.refFwd = refFwdOut; var.refRev = refRevOut;
                 var.frequency = af;
+                // ToVarsBuilder.createInsertion sets extraFrequency = extracnt / insCov (same denominator
+                // as frequency). The somatic insertion loop previously used raw totalCov and omitted
+                // ExtraAF entirely (col24 stuck at 0); mirror the simple builder's line 673.
+                var.extrafreq = (v.extracnt != 0 && insCov > 0) ? (double)v.extracnt / insCov : 0;
                 var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
                 var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
                 var.mapq  = v.varsCount ? v.meanMappingQuality / v.varsCount : 0;

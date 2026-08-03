@@ -1,4 +1,5 @@
 #include "somatic.hpp"
+#include "util.hpp"   // Perl-style substr (negative-index) used by adjComplex
 #include <cstdio>
 #include <cctype>
 #include <cmath>
@@ -49,23 +50,33 @@ static bool isNoise(const Config& cfg, const Variant& v) {
 // Variant.adjComplex: trim the common leading/trailing bases of a Complex variant's ref/alt alleles and
 // shift start/end accordingly. Ported for the somatic COMPLEX print path.
 static void adjComplex(Variant& v) {
-    std::string ref = v.refallele, var = v.varallele;
-    if (!var.empty() && var[0] == '<') return; // structural
+    // Exact port of tovars.cpp adjComplexVar (Variant.adjComplex): trim the shared 5' prefix and 3'
+    // suffix of a Complex variant, shifting start/end AND the flanking sequences. The somatic path
+    // previously shifted only start/end, leaving leftseq/rightseq off by the trim length (e.g. a
+    // "CC>CACACACA" -> "C>ACACACA" trim moved startPosition +1 but left the leftseq one base too far 5').
+    std::string refAllele = v.refallele;
+    std::string varAllele = v.varallele;
+    if (!varAllele.empty() && varAllele[0] == '<') return; // structural
     int n = 0;
-    while (n < (int)ref.size() - 1 && n < (int)var.size() - 1 && ref[n] == var[n]) n++;
+    while ((int)refAllele.size() - n > 1 && (int)varAllele.size() - n > 1 &&
+           refAllele[n] == varAllele[n]) n++;
     if (n > 0) {
         v.startPosition += n;
-        ref = ref.substr(n);
-        var = var.substr(n);
-        v.refallele = ref; v.varallele = var;
+        v.refallele = substr(refAllele, n);
+        v.varallele = substr(varAllele, n);
+        v.leftseq += substr(refAllele, 0, n);
+        v.leftseq = substr(v.leftseq, n);
     }
-    n = 0;
-    while ((int)ref.size() - 1 - n > 0 && (int)var.size() - 1 - n > 0
-           && ref[ref.size() - 1 - n] == var[var.size() - 1 - n]) n++;
-    if (n > 0) {
-        v.endPosition -= n;
-        v.refallele = ref.substr(0, ref.size() - n);
-        v.varallele = var.substr(0, var.size() - n);
+    refAllele = v.refallele;
+    varAllele = v.varallele;
+    n = 1;
+    while ((int)refAllele.size() - n > 0 && (int)varAllele.size() - n > 0 &&
+           substr(refAllele, -n, 1) == substr(varAllele, -n, 1)) n++;
+    if (n > 1) {
+        v.endPosition -= n - 1;
+        v.refallele = substr(refAllele, 0, 1 - n);
+        v.varallele = substr(varAllele, 0, 1 - n);
+        v.rightseq = substr(refAllele, 1 - n, n - 1) + substr(v.rightseq, 0, 1 - n);
     }
 }
 
