@@ -129,81 +129,114 @@ print("wrote tables.tex")
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from matplotlib.ticker import LogLocator, FuncFormatter, NullFormatter
 import numpy as np
 
 plt.rcParams.update({
     "font.family": "sans-serif", "font.sans-serif": ["DejaVu Sans", "Arial"],
-    "font.size": 8, "axes.labelsize": 8, "xtick.labelsize": 7.5, "ytick.labelsize": 7.5,
-    "legend.fontsize": 7.5, "axes.linewidth": 0.6, "xtick.major.width": 0.6,
-    "ytick.major.width": 0.6, "figure.dpi": 150, "savefig.dpi": 300, "savefig.bbox": "tight",
-    "pdf.fonttype": 42, "ps.fonttype": 42,
+    "font.size": 8.5, "axes.labelsize": 9, "xtick.labelsize": 8.5, "ytick.labelsize": 8,
+    "legend.fontsize": 8.5, "axes.linewidth": 0.7, "xtick.major.width": 0.7,
+    "ytick.major.width": 0.7, "ytick.minor.width": 0.5, "figure.dpi": 150,
+    "savefig.dpi": 400, "savefig.bbox": "tight", "pdf.fonttype": 42, "ps.fonttype": 42,
 })
 
-def style_box(ax, bp, color):
-    for b in bp["boxes"]:
-        b.set(facecolor=color, alpha=0.35, edgecolor=color, linewidth=1.0)
-    for w in bp["whiskers"] + bp["caps"]:
-        w.set(color=color, linewidth=1.0)
-    for m in bp["medians"]:
-        m.set(color=color, linewidth=1.4)
-    for fl in bp["fliers"]:
-        fl.set(marker="o", markersize=2.2, markerfacecolor=color,
-               markeredgecolor="none", alpha=0.5)
+W = 0.34          # box width
+OFF = 0.205       # dodge offset from group centre
+GREY = "#3a3a3a"  # ink for median / axis text
 
-def dodged_boxes(ax, cats, series_data, colors, points=True, jit=0.05, minbox=3):
-    """cats: x labels. series_data: list over series of list-over-cats of value-lists.
-    Draws a box where a cell has >= minbox replicates, else the points plus a median
-    tick (honest for small n instead of a degenerate one-point box)."""
-    xs = np.arange(len(cats)); w = 0.34
+
+def _shade(hex_color, f):
+    """darken hex_color toward black by fraction f (0..1)."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i+2], 16) for i in (0, 2, 4))
+    return "#%02x%02x%02x" % (int(r*(1-f)), int(g*(1-f)), int(b*(1-f)))
+
+
+def dodged_boxes(ax, cats, series_data, colors, ms=4.2, palpha=0.95, jit=0.075):
+    """cats: x labels. series_data: list over series of list-over-cats of value-lists."""
+    xs = np.arange(len(cats))
     for si, (data, color) in enumerate(zip(series_data, colors)):
-        pos = xs + (si - 0.5) * (w + 0.02)
+        edge = _shade(color, 0.15)
+        pos = xs + (si * 2 - 1) * OFF
         for xi, vals in zip(pos, data):
             if not vals:
                 continue
-            if len(vals) >= minbox:
-                bp = ax.boxplot([vals], positions=[xi], widths=w, patch_artist=True,
-                                showfliers=not points, zorder=3)
-                style_box(ax, bp, color)
-            else:  # median tick spanning the box width
+            if len(vals) >= 3:
+                bp = ax.boxplot([vals], positions=[xi], widths=W, patch_artist=True,
+                                showfliers=False, whis=(0, 100), capwidths=W * 0.5,
+                                zorder=3)
+                for b in bp["boxes"]:
+                    b.set(facecolor=color, alpha=0.30, edgecolor=edge, linewidth=1.1)
+                for w in bp["whiskers"] + bp["caps"]:
+                    w.set(color=edge, linewidth=1.0)
+                for m in bp["medians"]:
+                    m.set(color="white", linewidth=1.8, solid_capstyle="butt")
+            else:
                 m = st.median(vals)
-                ax.plot([xi - w / 2, xi + w / 2], [m, m], color=color, lw=1.6, zorder=3)
-            if points:
-                offs = np.linspace(-jit, jit, len(vals)) if len(vals) > 1 else [0.0]
-                ax.plot([xi + o for o in offs], vals, "o", ms=2.4, mfc=color,
-                        mec="none", alpha=0.6, zorder=4)
+                ax.plot([xi - W/2, xi + W/2], [m, m], color=edge, lw=1.8, zorder=3)
+            offs = np.linspace(-jit, jit, len(vals)) if len(vals) > 1 else [0.0]
+            ax.plot([xi + o for o in offs], vals, "o", ms=ms, mfc=color,
+                    mec="white", mew=0.6, alpha=palpha, zorder=6)
     ax.set_xticks(xs); ax.set_xticklabels(cats)
+    ax.set_xlim(-0.62, len(cats) - 0.38)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(axis="y", which="major", lw=0.4, color="0.85", zorder=0)
-    ax.tick_params(length=2.5)
+    for sp in ("left", "bottom"):
+        ax.spines[sp].set_color("#9a9a9a")
+    ax.tick_params(length=3, color="#9a9a9a", labelcolor=GREY)
 
-def legend_proxies(ax, loc="upper left", anchor=None):
-    from matplotlib.patches import Patch
-    handles = [Patch(facecolor=c, alpha=0.35, edgecolor=c, label=n) for n, c in SERIES]
-    ax.legend(handles=handles, frameon=False, loc=loc,
-              bbox_to_anchor=anchor if anchor else None)
 
-def klabel(s): return f"{round(REG.get(s,0)/1000)}k"
+def log_yaxis(ax):
+    ax.set_yscale("log")
+    ax.yaxis.set_major_locator(LogLocator(base=10))
+    ax.yaxis.set_minor_locator(LogLocator(base=10, subs=(2, 3, 5)))
+    def fmt(v, _):
+        e = np.floor(np.log10(v)); m = v / 10**e
+        return f"{v:g}" if round(m) in (1, 2, 5) else ""
+    ax.yaxis.set_major_formatter(FuncFormatter(fmt))
+    ax.yaxis.set_minor_formatter(FuncFormatter(fmt))
+    ax.grid(axis="y", which="major", lw=0.6, color="#e2e2e2", zorder=0)
+    ax.grid(axis="y", which="minor", lw=0.5, color="#f0f0f0", zorder=0)
+
+
+def top_legend(fig, ncol=2, y=1.005):
+    handles = [Patch(facecolor=c, alpha=0.30, edgecolor=_shade(c, 0.15), linewidth=1.1,
+                     label=n) for n, c in SERIES]
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, y),
+               ncol=ncol, frameon=False, handlelength=1.3, columnspacing=1.8,
+               handletextpad=0.6)
+
+
+def panel_tag(ax, tag):
+    ax.text(-0.015, 1.06, tag, transform=ax.transAxes, va="bottom", ha="right",
+            fontsize=10, fontweight="bold", color=GREY)
+
+
+def klabel(s): return f"{round(REG.get(s,0)/1000)} k"
+
 
 # ---- Fig 1 & 2: performance box plots ----
 def perf_fig(metric, ylabel, fname):
-    fig, axes = plt.subplots(1, 2, figsize=(6.6, 2.6), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(6.9, 3.3), sharey=True)
     for ax, th, tag in ((axes[0], "1", "a"), (axes[1], "8", "b")):
         cats = [klabel(s) for s in perf_samples]
         sd = [[REP.get((s, tool, th), {}).get(metric, []) for s in perf_samples]
               for tool, _ in SERIES]
         dodged_boxes(ax, cats, sd, [C_CPP, C_JAVA])
-        ax.set_yscale("log"); ax.set_xlabel("Target regions")
-        ax.text(0.02, 0.97, tag, transform=ax.transAxes, va="top", ha="left",
-                fontsize=9, fontweight="bold")
+        log_yaxis(ax)
+        ax.set_xlabel("Target regions")
+        ax.set_title(f"{th} thread" + ("s" if th != "1" else ""), fontsize=8.5,
+                     color=GREY, pad=4)
+        panel_tag(ax, tag)
     axes[0].set_ylabel(ylabel)
-    legend_proxies(axes[0], loc="upper left", anchor=(0.0, 0.90))
-    fig.tight_layout(w_pad=1.0)
+    top_legend(fig)
+    fig.tight_layout(w_pad=1.4, rect=(0, 0, 1, 0.93))
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGDIR, f"{fname}.{ext}"))
     plt.close(fig); print(f"wrote {fname}")
 
 perf_fig("wall", "Runtime (s)", "fig1_runtime")
-perf_fig("rss", "Peak RSS (MB)", "fig2_memory")
+perf_fig("rss", "Peak memory (MB)", "fig2_memory")
 
 # ---- Fig 3: accuracy box plots ----
 if per:
@@ -212,17 +245,20 @@ if per:
         for m in ("precision", "recall", "f1"):
             PER.setdefault((r["impl"], r["class"], m), []).append(float(r[m]))
     classes = ["snv", "indel"]; clsdisp = {"snv": "SNV", "indel": "Indel"}
-    metrics = [("precision", "Precision"), ("recall", "Recall"), ("f1", "F$_1$")]
-    fig, axes = plt.subplots(1, 3, figsize=(6.8, 2.6), sharey=True)
+    metrics = [("precision", "Precision"), ("recall", "Recall"), ("f1", "F$_1$-score")]
+    fig, axes = plt.subplots(1, 3, figsize=(7.1, 3.1), sharey=True)
     for ax, (mkey, mlab), tag in zip(axes, metrics, ("a", "b", "c")):
         cats = [clsdisp[c] for c in classes]
         sd = [[PER.get((tool, c, mkey), []) for c in classes] for tool, _ in SERIES]
-        dodged_boxes(ax, cats, sd, [C_CPP, C_JAVA])
-        ax.set_ylabel(mlab); ax.set_ylim(0.3, 1.02)
-        ax.text(0.03, 0.06, tag, transform=ax.transAxes, va="bottom", ha="left",
-                fontsize=9, fontweight="bold")
-    legend_proxies(axes[0], loc="lower left", anchor=(0.0, 0.10))
-    fig.tight_layout(w_pad=1.2)
+        dodged_boxes(ax, cats, sd, [C_CPP, C_JAVA], ms=3.0, palpha=0.6, jit=0.11)
+        ax.set_ylim(0.44, 1.03)
+        ax.set_yticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+        ax.grid(axis="y", which="major", lw=0.6, color="#e2e2e2", zorder=0)
+        ax.set_xlabel(mlab)
+        panel_tag(ax, tag)
+    axes[0].set_ylabel("Score (per 1-Mb window)")
+    top_legend(fig)
+    fig.tight_layout(w_pad=1.4, rect=(0, 0, 1, 0.93))
     for ext in ("pdf", "png"):
         fig.savefig(os.path.join(FIGDIR, f"fig3_accuracy.{ext}"))
     plt.close(fig); print("wrote fig3_accuracy")
