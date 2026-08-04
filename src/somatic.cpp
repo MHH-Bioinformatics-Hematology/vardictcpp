@@ -36,13 +36,24 @@ static std::string fmt(double v, const char* pat) {
     return buf;
 }
 
-// Variant.isNoise as a pure predicate (mirrors somatic determinateType's use).
-static bool isNoise(const Config& cfg, const Variant& v) {
+// Variant.isNoise (variations/Variant.isNoise). NOTE: this is NOT a pure predicate in VarDictJava --
+// when the variant is deemed noise it MUTATES the variant in place: the alt reads are subtracted from
+// the position depth and the alt counts/frequency are zeroed (totalPosCoverage -= positionCoverage;
+// positionCoverage/varsCountOnForward/varsCountOnReverse/frequency/highQualityReadsFrequency = 0).
+// determinateType calls it on the normal (v2nt) variant, and the MUTATED object is what gets printed,
+// so a low-quality single-read normal allele prints as Depth-1 / AltDepth 0 (not the raw Depth / 1).
+static bool isNoise(const Config& cfg, Variant& v) {
     double qual = v.qmean;
     int posCov = v.varsCount;
     bool has2diff = v.qstd != 0;
     if (((qual < 4.5 || (qual < 12 && !has2diff)) && posCov <= 3)
         || (qual < cfg.goodq && round4(v.frequency) < 2 * cfg.lofreq && posCov <= 1)) {
+        v.totalPosCoverage -= v.varsCount;
+        v.varsCount = 0;
+        v.varFwd = 0;
+        v.varRev = 0;
+        v.frequency = 0;
+        v.hifreq = 0;
         return true;
     }
     return false;
@@ -81,8 +92,11 @@ static void adjComplex(Variant& v) {
     }
 }
 
-// SomaticPostProcessModule.determinateType: 5-way classification of a compared variant.
-static std::string determinateType(const Config& cfg, const Variant& standardVariant, const Variant& variantToCompare) {
+// SomaticPostProcessModule.determinateType: 5-way classification of a compared variant. variantToCompare
+// is taken by non-const reference because the final isNoise() call MUTATES it (Java behaviour); the
+// classification below reads its ORIGINAL frequency/coverage (captured before isNoise runs, matching
+// Java where isNoise is the last check).
+static std::string determinateType(const Config& cfg, const Variant& standardVariant, Variant& variantToCompare) {
     double sfreq = standardVariant.frequency;
     double vfreq = variantToCompare.frequency;
     int vcov = variantToCompare.varsCount;
@@ -223,6 +237,12 @@ static std::string block(const Variant* v) {
     if (!v) return "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0";
     std::string geno = v->genotype.empty() ? "0" : v->genotype;
     std::string bias = v->bias.empty() ? "0" : v->bias;
+    // Java stores meanMappingQuality/numberOfMismatches pre-rounded (ToVarsBuilder roundHalfEven "0.0")
+    // and then prints "0" when that STORED value is 0 (mapq) / not > 0 (nm). cpp keeps the raw mean here
+    // too, so base the zero test on the ROUNDED value -- otherwise a tiny raw mean (e.g. 0.04) prints as
+    // "0.0" where Java prints "0" (simple-mode printer.cpp already does exactly this).
+    std::string mq = roundNloc(v->mapq, 1) == 0 ? std::string("0") : fmt(v->mapq, "%.1f");
+    std::string nm = roundNloc(v->nm, 1) > 0 ? fmt(v->nm, "%.1f") : std::string("0");
     // genotype of a large complex variant can be hundreds of bases; size the buffer to fit or the line
     // is truncated (dropping columns and corrupting the row layout).
     std::vector<char> buf(256 + geno.size() + bias.size());
@@ -231,9 +251,9 @@ static std::string block(const Variant* v) {
         v->totalPosCoverage, v->varsCount, v->refFwd, v->refRev, v->varFwd, v->varRev,
         geno.c_str(), fmt(v->frequency, "%.4f").c_str(), bias.c_str(),
         fmt(v->pmean, "%.1f").c_str(), v->pstd, fmt(v->qmean, "%.1f").c_str(), v->qstd,
-        fmt(v->mapq, "%.1f").c_str(), fmt(v->qratio, "%.3f").c_str(),
+        mq.c_str(), fmt(v->qratio, "%.3f").c_str(),
         fmt(v->hifreq, "%.4f").c_str(), fmt(v->extrafreq, "%.4f").c_str(),
-        v->nm > 0 ? fmt(v->nm, "%.1f").c_str() : "0");
+        nm.c_str());
     return buf.data();
 }
 
@@ -323,8 +343,11 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
         if (vref.vartype == "Complex") adjComplex(vref);
         const Variant* v2nt = getVarByDesc(v2, nt);
         if (v2nt != nullptr) {
-            std::string type = determinateType(cfg, vref, *v2nt);
-            printSomatic(out, sample, region, &vref, v2nt, &vref, v2nt, sv1, sv2, type);
+            // determinateType's terminal isNoise() mutates the normal variant in place (Depth-=alt,
+            // alt counts/freq zeroed); print the MUTATED copy, exactly as Java prints the same object.
+            Variant v2ntM = *v2nt;
+            std::string type = determinateType(cfg, vref, v2ntM);
+            printSomatic(out, sample, region, &vref, &v2ntM, &vref, &v2ntM, sv1, sv2, type);
         } else { // sample 1 only, should be strong somatic
             Variant varForPrint;
             const Variant* varForPrintPtr = nullptr;

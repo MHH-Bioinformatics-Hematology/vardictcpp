@@ -778,6 +778,14 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
     std::sort(sortedPositions.begin(), sortedPositions.end());
     for (int position : sortedPositions) {
         const VarMap& alleleMap = vd.nonInsertionVariants.at(position);
+        // ToVarsBuilder.java:103 skips a position whose non-insertion allele map is empty and that has
+        // no insertion, so it never becomes a key in alignedVariants. cpp populates nonInsertionVariants
+        // with an (empty) entry at reference positions consumed by an adjacent MNV/complex variant
+        // (e.g. chr2:92305670, absorbed into the TTT>ATA MNV at 92305668); without this skip such a
+        // position wrongly becomes a tumor SomaticPosition key, flipping the somatic routing from
+        // callingForOneSample ("Deletion") to callingForBothSamples ("StrongLOH").
+        if (alleleMap.empty() && vd.insertionVariants.find(position) == vd.insertionVariants.end())
+            continue;
         auto svIt = vd.svInfoAt.find(position);
         bool isSVpos = svIt != vd.svInfoAt.end();
         if (!isSVpos && (position < region.start || position > region.end)) continue;
@@ -843,6 +851,14 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 }
             }
         }
+
+        // Reference component of the strand-bias flag: the ref variant's OWN frozen flag (from its
+        // getDir counts at position), NOT recomputed from the re-sourced RefFwd/RefRev. Identical to
+        // callVariants (line 350) / ToVarsBuilder line 937-941.
+        std::string refBiasFlag = (refVar && refVar->varsCount > 0)
+            ? std::to_string(strandBias(refVar->varsCountOnForward, refVar->varsCountOnReverse,
+                                        cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+            : "0";
 
         // genotype1: identical to callVariants.
         std::string positionGenotype1;
@@ -950,16 +966,24 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             if (allele.size() == 1 && allele[0] == refBase) continue;
             // Somatic keeps every allele (even below -r) so the cross-sample descriptionString lookups
             // (LOH / paired match) can find it; -r only gates the good flag via isGoodVar.
-            double af = totalCov > 0 ? (double)v.varsCount / (double)totalCov : 0.0;
+            // Field math is identical to callVariants (Java uses ONE builder for simple and somatic):
+            // the frequency denominator is ttcov (raised to varsCount when over-covered but explained by
+            // extracnt), the Depth is the createInsertion-reconciled finalTotalCov, and RefFwd/RefRev are
+            // the position+1 re-sourced refFwdOut/refRevOut (ToVarsBuilder collectReferenceVariants
+            // 629-635 + line 932-934). Previously somatic used raw totalCov and raw refVar counts, which
+            // over/under-reported Depth and ref-strand at complex-indel / co-located-insertion loci.
+            int ttcov = totalCov;
+            if (v.varsCount > totalCov && v.extracnt > 0 && v.varsCount - totalCov < v.extracnt) ttcov = v.varsCount;
+            double af = ttcov > 0 ? (double)v.varsCount / (double)ttcov : 0.0;
 
             Variant var;
             var.startPosition = position;
             var.endPosition = position;
-            var.totalPosCoverage = totalCov;
+            var.totalPosCoverage = finalTotalCov;
             var.varsCount = v.varsCount;
             var.varFwd = v.varsCountOnForward;
             var.varRev = v.varsCountOnReverse;
-            if (refVar) { var.refFwd = refVar->varsCountOnForward; var.refRev = refVar->varsCountOnReverse; }
+            var.refFwd = refFwdOut; var.refRev = refRevOut;
             var.frequency = af;
             var.pmean = v.varsCount ? v.meanPosition / v.varsCount : 0;
             var.qmean = v.varsCount ? v.meanQuality / v.varsCount : 0;
@@ -970,11 +994,11 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             var.hicnt = v.highQualityReadsCount;
             var.hicov = hicov;
             var.hifreq = hicov > 0 ? (double)v.highQualityReadsCount / hicov : 0;
-            var.extrafreq = (v.extracnt != 0 && totalCov > 0) ? (double)v.extracnt / totalCov : 0;
+            var.extrafreq = (v.extracnt != 0 && ttcov > 0) ? (double)v.extracnt / ttcov : 0;
             var.qratio = v.lowQualityReadsCount > 0
                        ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                        : (double)v.highQualityReadsCount / 0.5;
-            var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias))
+            var.bias = refBiasFlag
                      + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads == 0 ? 2 : cfg.minBiasReads, cfg.bias));
             var.duprate = vd.duprate();
 
@@ -1087,8 +1111,13 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
             }
             var.vartype = classifyType(var.refallele, var.varallele);
             {
+                // genotype2 of a structural inversion is the COMPACT token "<INV{deletionLength}>"
+                // (ToVarsBuilder.java:718-724), NOT the raw expanded "-N^...<invM>..." description.
+                // The callVariants copy already does this; the somatic copy must match byte-for-byte.
                 auto rawDesc = [&](const std::string& a) -> std::string {
                     if (!a.empty() && a[0] == '+') return "+" + std::to_string((int)a.size() - 1);
+                    if (a.size() > 1 && a[0] == '-' && a.find("<inv") != std::string::npos)
+                        return "<INV" + a.substr(1, a.find('^') - 1) + ">"; // split-read INV -> "<INV{N}>"
                     return a;
                 };
                 std::string g1 = positionGenotype1;
@@ -1232,7 +1261,7 @@ std::vector<SomaticPosition> callVariantsSomatic(const Config& cfg, const Region
                 var.qratio = v.lowQualityReadsCount > 0
                            ? (double)v.highQualityReadsCount / v.lowQualityReadsCount
                            : (double)v.highQualityReadsCount / 0.5;
-                var.bias = std::to_string(strandBias(var.refFwd, var.refRev, cfg.minBiasReads, cfg.bias))
+                var.bias = refBiasFlag
                          + ";" + std::to_string(strandBias(var.varFwd, var.varRev, cfg.minBiasReads, cfg.bias));
                 for (int i = 20; i >= 1; --i) if (var.startPosition - i >= 1 && ref.has(var.startPosition - i)) var.leftseq += ref.at(var.startPosition - i);
                 for (int i = 1; i <= 20; ++i) if (ref.has(var.endPosition + i)) var.rightseq += ref.at(var.endPosition + i);
