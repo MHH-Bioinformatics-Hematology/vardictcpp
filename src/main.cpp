@@ -348,9 +348,14 @@ static int run(int argc, char** argv) {
     // Run the full counting + realignment pipeline for one BAM over a region and return its per-position
     // variation data. VarDict loads reference with numberNucleotideToExtend + referenceExtension(1200)
     // padding; realignment flanks + the seed index for findMatch need this wider window.
-    auto runPipeline = [&](Reference& ref, BamReader& b, const Region& region) {
+    // initMaxRL seeds vd.maxReadLength before counting. In somatic mode SomaticMode seeds the NORMAL
+    // (BAM2) pipeline with the TUMOR's final maxReadLength (SomaticMode.java:118), so the normal's
+    // realignment/softclip window (2*maxReadLength) matches the tumor's read length, not its own. The
+    // tumor (BAM1) and all simple-mode runs seed 0 (SomaticMode.java:107).
+    auto runPipeline = [&](Reference& ref, BamReader& b, const Region& region, int initMaxRL = 0) {
         ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
         VariationData vd;
+        vd.maxReadLength = initMaxRL;
         CigarParser(c, ref, b).process(region, vd);
         // Realignment order mirrors VariationRealigner: filterAllSVStructures (collapse discordant-pair
         // SV clusters) runs first, then adjustMNP, then realigndel, realignins, realignlgdel, ...
@@ -415,7 +420,8 @@ static int run(int argc, char** argv) {
             // ref bases), so pos1/pos2 both see consistent reference context.
             VariationData vd1 = runPipeline(ref, bam, region);
             auto pos1 = callVariantsSomatic(c, region, vd1, ref);
-            VariationData vd2 = runPipeline(ref, *bam2, region);
+            // BAM2 (normal) pipeline seeded with BAM1's maxReadLength (SomaticMode.java:118).
+            VariationData vd2 = runPipeline(ref, *bam2, region, vd1.maxReadLength);
             auto pos2 = callVariantsSomatic(c, region, vd2, ref);
             int maxRL = std::max(vd1.maxReadLength, vd2.maxReadLength);
             // combineAnalysis callback: re-run the merged pipeline over a widened window and return the
