@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "config.hpp"
+#include "var2vcf.hpp"
 #include "region.hpp"
 #include "reference.hpp"
 #include "simd.hpp"
@@ -119,8 +120,10 @@ static const std::map<std::string, bool> VARDICT_OPTS = {
     {"P",1},{"Q",1},{"R",1},{"S",1},{"T",1},{"V",1},{"VS",1},{"W",1},{"X",1},{"Y",1},{"Z",1},{"a",1},
     {"adaptor",1},{"b",1},{"c",1},{"d",1},{"e",1},{"f",1},{"g",1},{"j",1},{"m",1},{"mfreq",1},{"n",1},
     {"nmfreq",1},{"o",1},{"q",1},{"r",1},{"s",1},{"w",1},{"x",1},{"chunk",1},{"th",1},{"threads",1},
+    {"k",1},   // -k 0/1 : perform local realignment (VarDict takes a value)
     {"3",0},{"C",0},{"D",0},{"H",0},{"K",0},{"U",0},{"UN",0},{"chimeric",0},{"deldupvar",0},{"fisher",0},
-    {"h",0},{"i",0},{"k",0},{"p",0},{"t",0},{"u",0},{"v",0},{"y",0},{"z",0},{"?",0},
+    {"h",0},{"i",0},{"p",0},{"t",0},{"u",0},{"v",0},{"y",0},{"z",0},{"?",0},
+    {"vcf",0},{"noend",0},{"vcfpass",0},   // native VCF output (var2vcf port)
 };
 
 static int run(int argc, char** argv) {
@@ -221,6 +224,12 @@ static int run(int argc, char** argv) {
     c.chimeric = has("chimeric");
     if (has("k")) c.performLocalRealignment = std::atoi(val("k", "1").c_str()) != 0;
     c.chunkSize = ival("chunk", "0");
+    // --vcf: native var2vcf output (implies --fisher for the SBF/ODDRATIO columns). --noend / --vcfpass
+    // mirror var2vcf's -E / -S (which cannot reuse -E/-S here, those are the BED end/start columns).
+    c.vcf = has("vcf");
+    if (c.vcf) c.fisher = true;
+    c.vcfNoEnd = has("noend");
+    c.vcfPassOnly = has("vcfpass");
     c.threads = std::max(1, ival(has("threads") ? "threads" : "th", "1"));
     if (has("H") || has("?")) { usage(); return 0; }
 
@@ -339,9 +348,14 @@ static int run(int argc, char** argv) {
     // Run the full counting + realignment pipeline for one BAM over a region and return its per-position
     // variation data. VarDict loads reference with numberNucleotideToExtend + referenceExtension(1200)
     // padding; realignment flanks + the seed index for findMatch need this wider window.
-    auto runPipeline = [&](Reference& ref, BamReader& b, const Region& region) {
+    // initMaxRL seeds vd.maxReadLength before counting. In somatic mode SomaticMode seeds the NORMAL
+    // (BAM2) pipeline with the TUMOR's final maxReadLength (SomaticMode.java:118), so the normal's
+    // realignment/softclip window (2*maxReadLength) matches the tumor's read length, not its own. The
+    // tumor (BAM1) and all simple-mode runs seed 0 (SomaticMode.java:107).
+    auto runPipeline = [&](Reference& ref, BamReader& b, const Region& region, int initMaxRL = 0) {
         ref.load(region.chr, region.start, region.end, 1200 + c.numberNucleotideToExtend);
         VariationData vd;
+        vd.maxReadLength = initMaxRL;
         CigarParser(c, ref, b).process(region, vd);
         // Realignment order mirrors VariationRealigner: filterAllSVStructures (collapse discordant-pair
         // SV clusters) runs first, then adjustMNP, then realigndel, realignins, realignlgdel, ...
@@ -406,7 +420,8 @@ static int run(int argc, char** argv) {
             // ref bases), so pos1/pos2 both see consistent reference context.
             VariationData vd1 = runPipeline(ref, bam, region);
             auto pos1 = callVariantsSomatic(c, region, vd1, ref);
-            VariationData vd2 = runPipeline(ref, *bam2, region);
+            // BAM2 (normal) pipeline seeded with BAM1's maxReadLength (SomaticMode.java:118).
+            VariationData vd2 = runPipeline(ref, *bam2, region, vd1.maxReadLength);
             auto pos2 = callVariantsSomatic(c, region, vd2, ref);
             int maxRL = std::max(vd1.maxReadLength, vd2.maxReadLength);
             // combineAnalysis callback: re-run the merged pipeline over a widened window and return the
@@ -432,6 +447,9 @@ static int run(int argc, char** argv) {
         return buf;
     };
 
+    // --vcf buffers the full TSV (var2vcf reorders chromosomes); otherwise stream per region.
+    std::string vcfBuf;
+    auto sink = [&](const std::string& s){ if (c.vcf) vcfBuf += s; else std::fputs(s.c_str(), stdout); };
     const int nreg = (int)regions.size();
     int nthreads = std::max(1, std::min(c.threads, nreg));
     if (nthreads == 1) {
@@ -439,9 +457,8 @@ static int run(int argc, char** argv) {
         BamReader bam(c.bam);
         std::unique_ptr<BamReader> bam2;
         if (c.somatic) bam2.reset(new BamReader(c.bam2));
-        for (const auto& region : regions) std::fputs(processRegion(region, ref, bam, bam2.get()).c_str(), stdout);
-        return 0;
-    }
+        for (const auto& region : regions) sink(processRegion(region, ref, bam, bam2.get()));
+    } else {
 
     // Region-parallel with ordered streaming output (mirrors VarDictJava's AbstractParallelMode:
     // workers steal regions; a single consumer flushes buffers in region order so output is
@@ -481,11 +498,16 @@ static int run(int argc, char** argv) {
             done[printed] = 0;
             ++printed;
             lk.unlock();
-            std::fputs(out.c_str(), stdout);
+            sink(out);
             lk.lock();
         }
     }
     for (auto& t : pool) t.join();
+    }  // end multi-threaded branch
+    if (c.vcf) {
+        std::string vcf = c.somatic ? var2vcfPaired(c, vcfBuf) : var2vcfSingle(c, vcfBuf);
+        std::fputs(vcf.c_str(), stdout);
+    }
     return 0;
 }
 

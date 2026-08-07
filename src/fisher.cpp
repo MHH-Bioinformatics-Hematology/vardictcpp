@@ -294,6 +294,25 @@ double FisherExact::getPValue() const {
     return round_as_r(pvalueTwoSided);
 }
 
+// One-sided p-values summed over the NORMALIZED central hypergeometric density (dnhyper), the same
+// distribution the two-sided uses. The raw Hypergeometric struct probabilities are unnormalized
+// (commons-math binomial-product form), so summing them directly under-counts the tail; normalizing
+// first recovers the exact hypergeometric CDF that VarDictJava's pnhyper reports.
+double FisherExact::getPValueLess() const {
+    if (m + n == 0) return round_as_r(1.0);
+    std::vector<double> d = dnhyper(logdc, lo, hi, 1.0);
+    double sum = 0.0;
+    for (int i = 0; i < (int)d.size(); ++i) if (lo + i <= x) sum += d[i];
+    return round_as_r(sum);
+}
+double FisherExact::getPValueGreater() const {
+    if (m + n == 0) return round_as_r(1.0);
+    std::vector<double> d = dnhyper(logdc, lo, hi, 1.0);
+    double sum = 0.0;
+    for (int i = 0; i < (int)d.size(); ++i) if (lo + i >= x) sum += d[i];
+    return round_as_r(sum);
+}
+
 // mle(x): conditional MLE for the odds ratio.
 static double mle(const std::vector<double>& logdc, int lo, int hi, int x) {
     double eps = std::numeric_limits<double>::epsilon(); // Math.ulp(1.0)

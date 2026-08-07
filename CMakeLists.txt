@@ -54,6 +54,7 @@ add_executable(vardictcpp
   src/fisher.cpp
   src/somatic.cpp
   src/amplicon.cpp
+  src/var2vcf.cpp
 )
 find_package(Threads REQUIRED)
 target_include_directories(vardictcpp PRIVATE ${HTS_INCLUDE_DIR} src)

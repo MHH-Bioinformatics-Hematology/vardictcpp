@@ -133,7 +133,11 @@ void appendVariant(std::string& out, const Config& cfg, const Region& region, co
     std::string mq    = roundHalfEven(1, v.mapq) == 0 ? "0" : fmt(v.mapq, "%.1f");
     std::string sn    = fmt(v.qratio, "%.3f");
     std::string hiaf  = fmt(v.hifreq, "%.4f");
-    std::string exaf  = fmt(v.extrafreq, "%.4f");
+    // ExtraAF: ToVarsBuilder pre-rounds extraFrequency to 4 decimals (roundHalfEven "0.0000",
+    // ToVarsBuilder line 921); the column is then emitted at a fixed 4 decimals ("0" only when the
+    // rounded value is exactly 0). A tiny extracnt/depth ratio thus rounds to 0.0 and prints "0"
+    // (not "0.0000"), while a genuine value keeps its trailing zeros ("0.2500", not "0.25").
+    std::string exaf  = fmt(roundHalfEven(4, v.extrafreq), "%.4f");
     std::string msi   = fmt(v.msi, "%.3f");
     // NM prints with 0.0 only when > 0, else "0".
     std::string nm    = roundHalfEven(1, v.nm) > 0 ? fmt(v.nm, "%.1f") : "0";

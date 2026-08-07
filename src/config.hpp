@@ -60,6 +60,11 @@ struct Config {
     bool printHeader = false; // -h
     bool fisher = false;      // --fisher : add strand-bias Fisher exact p-value + odds-ratio columns
     int chunkSize = 0;        // --chunk : split long regions into windows (bounds memory)
+    // --vcf : emit VCF directly (native port of var2vcf_valid.pl / var2vcf_paired.pl). Implies fisher
+    // (the SBF/ODDRATIO columns are required). vcfEnd/vcfSomaticOnly mirror var2vcf -E / -M behaviour.
+    bool vcf = false;
+    bool vcfNoEnd = false;    // -E : do not print the END info tag
+    bool vcfPassOnly = false; // -S : drop non-PASS variants
     // Amplicon (multiplex) mode: -a EDGE:FRACTION (GlobalReadOnlyScope.ampliconBasedCalling). A read is
     // assigned to an amplicon only if its aligned edges are within EDGE bp of the amplicon boundaries
     // and its overlap fraction with the amplicon exceeds FRACTION (CigarParser.parseCigarWithAmpCase).

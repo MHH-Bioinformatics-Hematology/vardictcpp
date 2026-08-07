@@ -3,6 +3,7 @@
 #include <string>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 
 namespace vardict {
@@ -60,10 +61,14 @@ inline double roundHalfEven(const std::string& pattern, double value) {
     int decimals = 0;
     auto dot = pattern.find('.');
     if (dot != std::string::npos) decimals = (int)(pattern.size() - dot - 1);
-    double scale = std::pow(10.0, decimals);
-    double scaled = value * scale;
-    double r = std::nearbyint(scaled); // uses current rounding mode: round-half-to-even by default
-    return r / scale;
+    // Round the EXACT double value (as Java's DecimalFormat/BigDecimal does), not value*scale.
+    // Multiplying by 10^decimals can snap a value that is only epsilon away from a .5 boundary
+    // (e.g. 99.0/220.0 == 0.45000000000000001) exactly onto x.5, turning a clean round-up into a
+    // false banker's-rounding tie (-> 0.4). glibc printf performs correct round-half-to-even on the
+    // exact stored double, matching Java, so format-then-parse reproduces DecimalFormat's result.
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", decimals, value);
+    return std::strtod(buf, nullptr);
 }
 
 // getRoundedValueToPrint: integer -> "0" pattern; else pattern with trailing zeros stripped.

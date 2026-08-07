@@ -1,4 +1,6 @@
 #include "somatic.hpp"
+#include "util.hpp"   // Perl-style substr (negative-index) used by adjComplex
+#include "fisher.hpp"
 #include <cstdio>
 #include <cctype>
 #include <cmath>
@@ -34,13 +36,24 @@ static std::string fmt(double v, const char* pat) {
     return buf;
 }
 
-// Variant.isNoise as a pure predicate (mirrors somatic determinateType's use).
-static bool isNoise(const Config& cfg, const Variant& v) {
+// Variant.isNoise (variations/Variant.isNoise). NOTE: this is NOT a pure predicate in VarDictJava --
+// when the variant is deemed noise it MUTATES the variant in place: the alt reads are subtracted from
+// the position depth and the alt counts/frequency are zeroed (totalPosCoverage -= positionCoverage;
+// positionCoverage/varsCountOnForward/varsCountOnReverse/frequency/highQualityReadsFrequency = 0).
+// determinateType calls it on the normal (v2nt) variant, and the MUTATED object is what gets printed,
+// so a low-quality single-read normal allele prints as Depth-1 / AltDepth 0 (not the raw Depth / 1).
+static bool isNoise(const Config& cfg, Variant& v) {
     double qual = v.qmean;
     int posCov = v.varsCount;
     bool has2diff = v.qstd != 0;
     if (((qual < 4.5 || (qual < 12 && !has2diff)) && posCov <= 3)
         || (qual < cfg.goodq && round4(v.frequency) < 2 * cfg.lofreq && posCov <= 1)) {
+        v.totalPosCoverage -= v.varsCount;
+        v.varsCount = 0;
+        v.varFwd = 0;
+        v.varRev = 0;
+        v.frequency = 0;
+        v.hifreq = 0;
         return true;
     }
     return false;
@@ -49,28 +62,41 @@ static bool isNoise(const Config& cfg, const Variant& v) {
 // Variant.adjComplex: trim the common leading/trailing bases of a Complex variant's ref/alt alleles and
 // shift start/end accordingly. Ported for the somatic COMPLEX print path.
 static void adjComplex(Variant& v) {
-    std::string ref = v.refallele, var = v.varallele;
-    if (!var.empty() && var[0] == '<') return; // structural
+    // Exact port of tovars.cpp adjComplexVar (Variant.adjComplex): trim the shared 5' prefix and 3'
+    // suffix of a Complex variant, shifting start/end AND the flanking sequences. The somatic path
+    // previously shifted only start/end, leaving leftseq/rightseq off by the trim length (e.g. a
+    // "CC>CACACACA" -> "C>ACACACA" trim moved startPosition +1 but left the leftseq one base too far 5').
+    std::string refAllele = v.refallele;
+    std::string varAllele = v.varallele;
+    if (!varAllele.empty() && varAllele[0] == '<') return; // structural
     int n = 0;
-    while (n < (int)ref.size() - 1 && n < (int)var.size() - 1 && ref[n] == var[n]) n++;
+    while ((int)refAllele.size() - n > 1 && (int)varAllele.size() - n > 1 &&
+           refAllele[n] == varAllele[n]) n++;
     if (n > 0) {
         v.startPosition += n;
-        ref = ref.substr(n);
-        var = var.substr(n);
-        v.refallele = ref; v.varallele = var;
+        v.refallele = substr(refAllele, n);
+        v.varallele = substr(varAllele, n);
+        v.leftseq += substr(refAllele, 0, n);
+        v.leftseq = substr(v.leftseq, n);
     }
-    n = 0;
-    while ((int)ref.size() - 1 - n > 0 && (int)var.size() - 1 - n > 0
-           && ref[ref.size() - 1 - n] == var[var.size() - 1 - n]) n++;
-    if (n > 0) {
-        v.endPosition -= n;
-        v.refallele = ref.substr(0, ref.size() - n);
-        v.varallele = var.substr(0, var.size() - n);
+    refAllele = v.refallele;
+    varAllele = v.varallele;
+    n = 1;
+    while ((int)refAllele.size() - n > 0 && (int)varAllele.size() - n > 0 &&
+           substr(refAllele, -n, 1) == substr(varAllele, -n, 1)) n++;
+    if (n > 1) {
+        v.endPosition -= n - 1;
+        v.refallele = substr(refAllele, 0, 1 - n);
+        v.varallele = substr(varAllele, 0, 1 - n);
+        v.rightseq = substr(refAllele, 1 - n, n - 1) + substr(v.rightseq, 0, 1 - n);
     }
 }
 
-// SomaticPostProcessModule.determinateType: 5-way classification of a compared variant.
-static std::string determinateType(const Config& cfg, const Variant& standardVariant, const Variant& variantToCompare) {
+// SomaticPostProcessModule.determinateType: 5-way classification of a compared variant. variantToCompare
+// is taken by non-const reference because the final isNoise() call MUTATES it (Java behaviour); the
+// classification below reads its ORIGINAL frequency/coverage (captured before isNoise runs, matching
+// Java where isNoise is the last check).
+static std::string determinateType(const Config& cfg, const Variant& standardVariant, Variant& variantToCompare) {
     double sfreq = standardVariant.frequency;
     double vfreq = variantToCompare.frequency;
     int vcov = variantToCompare.varsCount;
@@ -171,11 +197,52 @@ static std::string combineAnalysis(const Config& cfg, const CombineFn& combine,
     return "";
 }
 
+// --fisher mode flag (set from cfg.fisher in appendSomaticRegion; constant across threads).
+static bool g_somaticFisher = false;
+
+// Fisher-mode numeric formatting, matching getRoundedValueToPrint: pre-round to N dp (roundHalfEven),
+// then integral -> "%.0f" else "%.*f" with trailing zeros stripped.
+static double rheFs(int d, double v) { char b[64]; std::snprintf(b, sizeof(b), "%.*f", d, v); return std::atof(b); }
+static std::string getRndFs(int d, double v) {
+    v = rheFs(d, v);
+    char b[64];
+    if (v == std::floor(v + 0.5)) { std::snprintf(b, sizeof(b), "%.0f", v); return b; }
+    std::snprintf(b, sizeof(b), "%.*f", d, v);
+    std::string s(b); s.erase(s.find_last_not_of('0') + 1); return s;
+}
+
+// The 20-field fisher per-sample block: the 18 base fields (getRoundedValueToPrint formatting) plus the
+// strand-bias Fisher p-value + odds-ratio (SomaticOutputVariant.create_somatic_variant_61columns).
+static std::string blockFisher(const Variant* v) {
+    FisherExact fisher(v ? v->refFwd : 0, v ? v->refRev : 0, v ? v->varFwd : 0, v ? v->varRev : 0);
+    std::string pv  = getRndFs(5, fisher.getPValue());
+    std::string orr = fisher.getOddRatio();
+    if (!v) return std::string("0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t") + pv + "\t" + orr;
+    std::string geno = v->genotype.empty() ? "0" : v->genotype;
+    std::string bias = v->bias.empty() ? "0" : v->bias;
+    std::vector<char> buf(320 + geno.size() + bias.size() + pv.size() + orr.size());
+    std::snprintf(buf.data(), buf.size(),
+        "%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+        v->totalPosCoverage, v->varsCount, v->refFwd, v->refRev, v->varFwd, v->varRev,
+        geno.c_str(), getRndFs(4, v->frequency).c_str(), bias.c_str(),
+        getRndFs(1, v->pmean).c_str(), v->pstd, getRndFs(1, v->qmean).c_str(), v->qstd,
+        getRndFs(1, v->mapq).c_str(), getRndFs(3, v->qratio).c_str(),
+        getRndFs(4, v->hifreq).c_str(), getRndFs(4, v->extrafreq).c_str(), getRndFs(1, v->nm).c_str(),
+        pv.c_str(), orr.c_str());
+    return buf.data();
+}
+
 // The 18-field per-sample block (Depth..NM). A null slot prints 18 zeros (matching a null Variant).
 static std::string block(const Variant* v) {
     if (!v) return "0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0";
     std::string geno = v->genotype.empty() ? "0" : v->genotype;
     std::string bias = v->bias.empty() ? "0" : v->bias;
+    // Java stores meanMappingQuality/numberOfMismatches pre-rounded (ToVarsBuilder roundHalfEven "0.0")
+    // and then prints "0" when that STORED value is 0 (mapq) / not > 0 (nm). cpp keeps the raw mean here
+    // too, so base the zero test on the ROUNDED value -- otherwise a tiny raw mean (e.g. 0.04) prints as
+    // "0.0" where Java prints "0" (simple-mode printer.cpp already does exactly this).
+    std::string mq = roundNloc(v->mapq, 1) == 0 ? std::string("0") : fmt(v->mapq, "%.1f");
+    std::string nm = roundNloc(v->nm, 1) > 0 ? fmt(v->nm, "%.1f") : std::string("0");
     // genotype of a large complex variant can be hundreds of bases; size the buffer to fit or the line
     // is truncated (dropping columns and corrupting the row layout).
     std::vector<char> buf(256 + geno.size() + bias.size());
@@ -184,9 +251,9 @@ static std::string block(const Variant* v) {
         v->totalPosCoverage, v->varsCount, v->refFwd, v->refRev, v->varFwd, v->varRev,
         geno.c_str(), fmt(v->frequency, "%.4f").c_str(), bias.c_str(),
         fmt(v->pmean, "%.1f").c_str(), v->pstd, fmt(v->qmean, "%.1f").c_str(), v->qstd,
-        fmt(v->mapq, "%.1f").c_str(), fmt(v->qratio, "%.3f").c_str(),
+        mq.c_str(), fmt(v->qratio, "%.3f").c_str(),
         fmt(v->hifreq, "%.4f").c_str(), fmt(v->extrafreq, "%.4f").c_str(),
-        v->nm > 0 ? fmt(v->nm, "%.1f").c_str() : "0");
+        nm.c_str());
     return buf.data();
 }
 
@@ -206,7 +273,7 @@ static void printSomatic(std::string& out, const std::string& sample, const Regi
         begin->startPosition, begin->endPosition, begin->refallele.c_str(), begin->varallele.c_str());
     std::vector<char> tail(256 + leftS.size() + rightS.size() + label.size()
                            + begin->vartype.size() + region.chr.size() + sv1.size() + sv2.size());
-    std::snprintf(tail.data(), tail.size(), "\t%d\t%s\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+    std::snprintf(tail.data(), tail.size(), "\t%d\t%s\t%d\t%s\t%s\t%s:%d-%d\t%s\t%s\t%s\t%s\t%s\t%s",
         end ? end->shift3 : 0, end ? fmt(end->msi, "%.3f").c_str() : "0", end ? end->msint : 0,
         leftS.c_str(), rightS.c_str(),
         region.chr.c_str(), region.start, region.end,
@@ -214,10 +281,21 @@ static void printSomatic(std::string& out, const std::string& sample, const Regi
         tumor ? fmt(tumor->duprate, "%.1f").c_str() : "0", sv1.empty() ? "0" : sv1.c_str(),
         normal ? fmt(normal->duprate, "%.1f").c_str() : "0", sv2.empty() ? "0" : sv2.c_str());
     out += head.data();
-    out += block(tumor);
+    out += g_somaticFisher ? blockFisher(tumor) : block(tumor);
     out += "\t";
-    out += block(normal);
+    out += g_somaticFisher ? blockFisher(normal) : block(normal);
     out += tail.data();
+    if (g_somaticFisher) {
+        // Combined tumor-vs-normal Fisher (SomaticOutputVariant.calculateFisherSomatic): 2x2 of
+        // tumor/normal variant vs reference coverage; the reported p-value is min(less, greater).
+        int tvar = tumor ? tumor->varsCount : 0,  ttot = tumor  ? tumor->totalPosCoverage  : 0;
+        int nvar = normal ? normal->varsCount : 0, ntot = normal ? normal->totalPosCoverage : 0;
+        int tref = std::max(0, ttot - tvar), rref = std::max(0, ntot - nvar);
+        FisherExact cf(tvar, tref, nvar, rref);
+        double pl = cf.getPValueLess(), pg = cf.getPValueGreater();
+        out += "\t"; out += getRndFs(5, pl < pg ? pl : pg); out += "\t"; out += cf.getOddRatio();
+    }
+    out += "\n";
 }
 
 // Lookups mirroring getVarMaybe(vars, varn, nt) and getVarMaybe(vars, var, 0).
@@ -265,8 +343,11 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
         if (vref.vartype == "Complex") adjComplex(vref);
         const Variant* v2nt = getVarByDesc(v2, nt);
         if (v2nt != nullptr) {
-            std::string type = determinateType(cfg, vref, *v2nt);
-            printSomatic(out, sample, region, &vref, v2nt, &vref, v2nt, sv1, sv2, type);
+            // determinateType's terminal isNoise() mutates the normal variant in place (Depth-=alt,
+            // alt counts/freq zeroed); print the MUTATED copy, exactly as Java prints the same object.
+            Variant v2ntM = *v2nt;
+            std::string type = determinateType(cfg, vref, v2ntM);
+            printSomatic(out, sample, region, &vref, &v2ntM, &vref, &v2ntM, sv1, sv2, type);
         } else { // sample 1 only, should be strong somatic
             Variant varForPrint;
             const Variant* varForPrintPtr = nullptr;
@@ -316,8 +397,11 @@ static void printVariationsFromFirstSample(std::string& out, const Config& cfg, 
                 const Variant* v1var = getTopVar(v1);
                 int tcov = (v1var && v1var->totalPosCoverage) ? v1var->totalPosCoverage : 0;
                 const Variant* v1ref = v1->hasRef ? &v1->referenceVariant : nullptr;
-                int fwd = v1ref ? v1ref->varFwd : 0;
-                int rev = v1ref ? v1ref->varRev : 0;
+                // The tumor RefFwd/RefRev of a normal-only (StrongLOH) variant come from the tumor
+                // reference variant's reference-strand counts (refFwd/refRev). A reference variant has no
+                // alt, so varFwd/varRev are 0 -- reading those left the tumor RefFwd/RefRev stuck at 0.
+                int fwd = v1ref ? v1ref->refFwd : 0;
+                int rev = v1ref ? v1ref->refRev : 0;
                 std::string genotype = v1var ? v1var->genotype
                                              : (v1ref ? v1ref->descriptionString + "/" + v1ref->descriptionString : "N/N");
                 Variant v2varc = v2var0;
@@ -380,6 +464,7 @@ void appendSomaticRegion(std::string& out, const Config& cfg, const Region& regi
                          const std::vector<SomaticPosition>& tumor,
                          const std::vector<SomaticPosition>& normal,
                          const CombineFn& combine) {
+    g_somaticFisher = cfg.fisher;
     std::string sample = cfg.sample;
     if (!cfg.sample2.empty()) sample += "|" + cfg.sample2;
 
