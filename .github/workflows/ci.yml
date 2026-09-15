@@ -19,6 +19,12 @@ jobs:
   build-test:
     name: ${{ matrix.os }} / ${{ matrix.arch }} / ${{ matrix.cc }}
     runs-on: ${{ matrix.os }}
+    # Fail fast if a runner never becomes available instead of sitting in the queue for 24 h.
+    timeout-minutes: 30
+    # The Intel-mac image is being retired and its hosted-runner queue can starve; keep the leg for
+    # coverage but let it not block CI. x86-64 is already gated by the Linux legs and the macOS
+    # toolchain path by the arm64 macos-14 leg, so a skipped Intel-mac run loses no real signal.
+    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -27,7 +33,7 @@ jobs:
           - { os: ubuntu-latest,    arch: x86_64, cc: clang, cxx: clang++ }
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: gcc,   cxx: g++ }
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: clang, cxx: clang++ }
-          - { os: macos-13,         arch: x86_64, cc: clang, cxx: clang++ }   # Intel Mac
+          - { os: macos-13,         arch: x86_64, cc: clang, cxx: clang++, experimental: true }   # Intel Mac (retiring runner; non-blocking)
           - { os: macos-14,         arch: arm64,  cc: clang, cxx: clang++ }   # Apple Silicon
     steps:
       - uses: actions/checkout@v4
