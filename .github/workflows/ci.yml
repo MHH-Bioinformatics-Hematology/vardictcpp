@@ -12,19 +12,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Correctness + portability gate: build and run the parity suite on Linux and macOS, on both x86-64
-  # and ARM (Apple Silicon / arm64). The source has no architecture-specific intrinsics; the portable
-  # SIMD kernels compile to SSE2 on x86-64 and NEON on ARM, so a green matrix proves the same
-  # byte-identical output on every target.
+  # Correctness + portability gate: build and run the parity suite on Linux (x86-64 and arm64) and
+  # macOS (Apple Silicon / arm64). Intel macOS is not supported. The source has no architecture-specific
+  # intrinsics; the portable SIMD kernels compile to SSE2 on x86-64 and NEON on ARM, so a green matrix
+  # proves the same byte-identical output on every supported target.
   build-test:
     name: ${{ matrix.os }} / ${{ matrix.arch }} / ${{ matrix.cc }}
     runs-on: ${{ matrix.os }}
     # Fail fast if a runner never becomes available instead of sitting in the queue for 24 h.
     timeout-minutes: 30
-    # The Intel-mac image is being retired and its hosted-runner queue can starve; keep the leg for
-    # coverage but let it not block CI. x86-64 is already gated by the Linux legs and the macOS
-    # toolchain path by the arm64 macos-14 leg, so a skipped Intel-mac run loses no real signal.
-    continue-on-error: ${{ matrix.experimental == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +29,6 @@ jobs:
           - { os: ubuntu-latest,    arch: x86_64, cc: clang, cxx: clang++ }
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: gcc,   cxx: g++ }
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: clang, cxx: clang++ }
-          - { os: macos-13,         arch: x86_64, cc: clang, cxx: clang++, experimental: true }   # Intel Mac (retiring runner; non-blocking)
           - { os: macos-14,         arch: arm64,  cc: clang, cxx: clang++ }   # Apple Silicon
     steps:
       - uses: actions/checkout@v4
