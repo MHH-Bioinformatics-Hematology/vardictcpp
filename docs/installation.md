@@ -18,9 +18,11 @@ mamba install -c bioconda vardictcpp
 
 ## Galaxy
 
-vardictcpp is available as a Galaxy tool. Search for "vardictcpp" in a Galaxy instance that has the
-IUC tool set installed, or install it from the Galaxy Tool Shed. The wrapper exposes single-sample and
-paired (tumor/normal) modes and the common calling options.
+vardictcpp is available as a Galaxy tool from the
+[Galaxy Tool Shed](https://toolshed.g2.bx.psu.edu/), published under the author's own repository
+(owner `mhh-hematology`). A Galaxy administrator can install it from
+**Admin > Tool Management > Install and Uninstall**, by searching for `vardictcpp` in the Tool Shed.
+The wrapper exposes single-sample and paired (tumor/normal) modes and the common calling options.
 
 ## Build from source
 
