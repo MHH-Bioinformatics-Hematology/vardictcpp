@@ -31,7 +31,7 @@ jobs:
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: clang, cxx: clang++ }
           - { os: macos-14,         arch: arm64,  cc: clang, cxx: clang++ }   # Apple Silicon
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install htslib + toolchain (Linux)
         if: runner.os == 'Linux'
@@ -67,56 +67,3 @@ jobs:
 
       - name: Test suite (parity vs VarDictJava golden)
         run: bash test/run_tests.sh
-
-  # Runtime + memory comparison vs stock VarDictJava 1.8.3 (from bioconda) on the self-contained
-  # fixture. Non-blocking (timing on shared CI runners is indicative, not a hard gate); Linux x86 only,
-  # since bioconda's vardict-java is the reference and the numbers just need one representative host.
-  benchmark:
-    name: runtime & memory vs VarDictJava
-    needs: build-test
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install htslib + stock VarDictJava (bioconda)
-        uses: mamba-org/setup-micromamba@v2
-        with:
-          environment-name: bench
-          create-args: >-
-            htslib
-            vardict-java=1.8.3
-            openjdk
-
-      - name: Build vardictcpp
-        shell: bash -el {0}
-        run: |
-          cmake -S . -B build -DHTSLIB_ROOT="$CONDA_PREFIX" -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
-
-      - name: Benchmark both callers on the fixture
-        shell: bash -el {0}
-        run: |
-          set -euo pipefail
-          REF=test/data/tref.fa; BAM=test/data/tref.bam; RGN=tref:1-20001
-          measure() {  # -> "wall_seconds|peak_MB|nvars"
-            /usr/bin/time -v "$@" >/tmp/out.tsv 2>/tmp/time.txt
-            local w r n
-            w=$(awk -F': ' '/wall clock/{print $2}' /tmp/time.txt | awk -F: '{print ($1*60)+$2}')
-            r=$(awk '/Maximum resident/{printf "%.1f",$6/1024}' /tmp/time.txt)
-            n=$(grep -c . /tmp/out.tsv || true)
-            echo "${w}|${r}|${n}"
-          }
-          IFS='|' read cw cr cn < <(measure build/vardictcpp -G $REF -f 0.05 -N t -b $BAM -R $RGN -th 1)
-          IFS='|' read jw jr jn < <(measure vardict-java     -G $REF -f 0.05 -N t -b $BAM -R $RGN -th 1)
-          spd=$(awk "BEGIN{printf \"%.1f\", $jw/$cw}")
-          mem=$(awk "BEGIN{printf \"%.1f\", $jr/$cr}")
-          {
-            echo "| tool | wall (s) | peak RSS (MB) | variants |"
-            echo "|---|---|---|---|"
-            echo "| VarDictJava 1.8.3 | ${jw} | ${jr} | ${jn} |"
-            echo "| vardictcpp | ${cw} | ${cr} | ${cn} |"
-            echo ""
-            echo "**vardictcpp is ${spd}x faster and uses ${mem}x less peak memory** on the fixture (test/data, -f 0.05, 1 thread)."
-            echo "_Fixture-scale, JVM-startup-inclusive; see bench/ for whole-exome numbers._"
-          } >> "$GITHUB_STEP_SUMMARY"
