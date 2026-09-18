@@ -52,9 +52,9 @@ CI builds and runs the parity suite on Linux (x86-64 and arm64) and macOS on App
 with gcc and clang, so portability across those supported targets is enforced on every push.
 
 **Intel (x86-64) Macs are not officially supported.** The portable build should still work there and
-we try to provide a conda package for it, but Apple has announced that macOS Tahoe (26) is the last
-release to support Intel Macs (macOS 27 requires Apple Silicon), so newer vardictcpp releases may stop
-working on Intel Macs and such breakage will not be fixed.
+we provide a conda package for it on a best-effort basis, but as of the current macOS 27 Apple no
+longer supports Intel Macs (macOS Tahoe 26 was the last to support them), so newer vardictcpp releases
+may stop working on Intel Macs and such breakage will not be fixed.
 
 ## Usage
 
