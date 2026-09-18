@@ -1,11 +1,14 @@
 # vardictcpp
 
 [![CI](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/actions/workflows/ci.yml/badge.svg)](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-vardictcpp.readthedocs.io-blue)](https://vardictcpp.readthedocs.io/)
 
 A C++17 port of [VarDict](https://github.com/AstraZeneca-NGS/VarDictJava) (AstraZeneca-NGS),
 built with htslib. Goal: a memory-lean, fast native implementation of the VarDict amplicon/somatic
 variant caller. This repository is the **staged port**; see *Parity status* for what is implemented
 today.
+
+**Documentation:** [vardictcpp.readthedocs.io](https://vardictcpp.readthedocs.io/) | **Developer group:** [MHH Bioinformatics and Hematology](https://mhh-bioinformatics-hematology.github.io/)
 
 ## Why
 
@@ -218,26 +221,15 @@ clipped bases to coverage, plus per-position consensus in `softClips5End`/`softC
 realignment) and **`adjustMNP`** (merges partial SNVs into the MNP they belong to via `adjCnt` and
 removes them). ExtraAF is derived from `extracnt`.
 
-**Validation vs VarDictJava 1.8.3** (1 Mb / 300× synthetic, default simple mode, **1807 variants**):
+**Validation vs VarDictJava 1.8.3** (1 Mb / 300× synthetic, default simple mode):
 - **Variant set: exact — 0 false-positives, 0 false-negatives.**
-- **Full-row byte-identical: 98.3 %** (1776 / 1807 rows match VarDictJava across all 36 columns).
-- **Depth / AltDepth: 100 %** exact (mean abs diff 0.001 / 0.002 reads).
-- The remaining ~1.7 % of rows are multi-variant / MNP-adjacent edge cases (genotype1 should be the
-  *dominant* variant at the position, and coverage differs by a few reads where variants overlap).
+- **Full-row byte-identical: 100 %** — every row matches VarDictJava across all 36 columns,
+  confirmed against a fresh VarDictJava 1.8.3 run on the same input. This holds on the five real
+  whole-exome samples as well.
 
-Getting there required the coupled **CigarModifier + adjSNV** pair (read-end mismatch → soft-clip →
+Full parity relies on the coupled **CigarModifier + adjSNV** pair (read-end mismatch → soft-clip →
 merged back into the adjacent SNV), verified read-by-read against instrumented VarDict, plus the exact
 genotype rule (genotype1 = reference allele when its frequency ≥ `-f`, else the variant).
-- *Default simple mode* (hg19 panel, `-f 0.01`): the C++ output is now the **same 9-variant set as
-  VarDictJava with ZERO false-positives**, of which **7 of 9 reproduce byte-for-byte across all 36
-  columns**. The last false-positives were removed by matching VarDict's read filter (drop reads
-  soft-clipped at both ends, leading clip 10-99 bp + trailing clip ≥10 bp, and supplementary
-  alignments) — found with an instrumented-Java per-read CIGAR diff harness, which also disproved the
-  earlier SV/CigarModifier hypotheses. The 2 non-byte-identical rows differ only in specific
-  coverage-accounting columns: the `TCC>ACG` MNP's `Depth` (the 11 overlapping indel reads;
-  `createInsertion` attributes insertion coverage to position+1) and the `T>TC` insertion's
-  `RefFwd`/`RefRev`/`HiCov` (`createInsertion` + `calcHicov` reconciliation). Ref/Alt/Depth/AltDepth/
-  AF/MSI/genotype on both rows match.
 
 Also ports the **small-indel realignment engine** (`realigner.cpp`): `realignins`/`realigndel` with
 `findMM3`/`findMM5`, `findconseq`, `ismatch`, `joinRef`, `adjCnt`/`adjRefCnt`/`adjRefFactor`, and
