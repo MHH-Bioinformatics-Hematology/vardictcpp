@@ -1,7 +1,14 @@
 # Installation
 
-vardictcpp runs on Linux and macOS, on both x86-64 and ARM (Apple Silicon). Its only runtime
+vardictcpp runs on Linux (x86-64 and ARM) and macOS on Apple Silicon (ARM). Its only runtime
 dependency is [htslib](https://github.com/samtools/htslib).
+
+!!! note "Intel (x86-64) Macs"
+    vardictcpp is architecture-portable, and we believe it also runs on Intel-based Macs; we try to
+    provide a conda package for that platform. It is not officially supported, however: Apple has
+    announced the end of Intel Mac support with the upcoming macOS 28, so we do not support Intel
+    macOS officially. Do not be surprised if a newer vardictcpp release stops working on an Intel Mac,
+    and note that Intel-Mac-specific breakage will not be fixed.
 
 ## Bioconda (recommended)
 

@@ -44,12 +44,17 @@ the scalar path:
 - anything else → a scalar fallback
 
 `vardictcpp --version` prints the version and the compiled-in backend (e.g.
-`vardictcpp 1 (SIMD backend: NEON)`). For a locally built, non-distributed binary you can add
+`vardictcpp 3 (SIMD backend: NEON)`). For a locally built, non-distributed binary you can add
 host-specific tuning with `-DVARDICTCPP_NATIVE=ON` (adds `-march=native`, or `-mcpu=native` on ARM);
 leave it off for anything you ship, and never use it for a Bioconda build.
 
-CI builds and runs the parity suite on the full matrix (Linux and macOS, x86-64 and arm64, gcc and
-clang), so portability across those targets is enforced on every push.
+CI builds and runs the parity suite on Linux (x86-64 and arm64) and macOS on Apple Silicon (arm64),
+with gcc and clang, so portability across those supported targets is enforced on every push.
+
+**Intel (x86-64) Macs are not officially supported.** The portable build should still work there and
+we try to provide a conda package for it, but Apple has announced the end of Intel Mac support with
+the upcoming macOS 28, so newer vardictcpp releases may stop working on Intel Macs and such breakage
+will not be fixed.
 
 ## Usage
 
