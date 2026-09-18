@@ -44,12 +44,17 @@ the scalar path:
 - anything else → a scalar fallback
 
 `vardictcpp --version` prints the version and the compiled-in backend (e.g.
-`vardictcpp 1 (SIMD backend: NEON)`). For a locally built, non-distributed binary you can add
+`vardictcpp 3 (SIMD backend: NEON)`). For a locally built, non-distributed binary you can add
 host-specific tuning with `-DVARDICTCPP_NATIVE=ON` (adds `-march=native`, or `-mcpu=native` on ARM);
 leave it off for anything you ship, and never use it for a Bioconda build.
 
-CI builds and runs the parity suite on the full matrix (Linux and macOS, x86-64 and arm64, gcc and
-clang), so portability across those targets is enforced on every push.
+CI builds and runs the parity suite on Linux (x86-64 and arm64) and macOS on Apple Silicon (arm64),
+with gcc and clang, so portability across those supported targets is enforced on every push.
+
+**Intel (x86-64) Macs are not officially supported.** The portable build should still work there and
+we provide a conda package for it on a best-effort basis, but as of the current macOS 27 Apple no
+longer supports Intel Macs (macOS Tahoe 26 was the last to support them), so newer vardictcpp releases
+may stop working on Intel Macs and such breakage will not be fixed.
 
 ## Usage
 
@@ -64,6 +69,45 @@ splits regions longer than `N` bp into consecutive windows, bounding peak memory
 interval length (identical mechanism to the `--chunk` flag added to VarDictJava in this project).
 `--th N` (alias `--threads`) processes regions across `N` worker threads with ordered streaming
 output (mirrors VarDictJava's parallel mode); output is bit-identical to single-threaded.
+
+### Options
+
+vardictcpp accepts VarDict-Java 1.8.3's complete option syntax; the flags most runs need are below
+(defaults in parentheses). Every option keeps VarDict's meaning and default, so existing command
+lines and wrapper scripts work unchanged.
+
+| Flag | Argument | Meaning |
+|---|---|---|
+| `-G` | FILE | Reference FASTA. Auto-indexed with htslib `faidx`, so no `samtools faidx` step is needed. **Required.** |
+| `-b` | FILE | Input BAM/CRAM. Somatic (paired) mode: `-b 'tumor.bam\|normal.bam'`. **Required.** |
+| `-N` | STR | Sample name. Somatic mode: `-N 'tumor\|normal'`. **Required.** |
+| `-R` | chr:start-end | Call a single region. The whole region is held in memory at once, so use a BED or `--chunk` for large intervals. |
+| _(BED)_ | path | Positional BED of target intervals to call. |
+| `-c -S -E -g` | INT | 1-based BED column indices for chromosome, start, end and gene/name (e.g. `-c 1 -S 2 -E 3 -g 4`). |
+| `-z` | | Treat BED start/end as 0-based (standard BED). |
+| `-x` | INT | Extend every region by INT bp up- and downstream, e.g. `1000` = +/- 1 kb (0). |
+| `--chunk` | INT | Split any region longer than INT bp into consecutive windows, bounding peak memory. |
+| `-f` | FLOAT | Minimum variant allele frequency (0.01). Set `0` for MRD / ultra-low-VAF calling. |
+| `-r` | INT | Minimum alt reads to call a variant (2). |
+| `-q` | FLOAT | Base-quality boundary for good/bad base counting (22.5). |
+| `-B` | INT | Minimum reads per strand for the strand-bias flag (2). |
+| `-O` | FLOAT | Minimum mean mapping quality (0). |
+| `-P` | INT | Minimum mean read position for a variant (5). |
+| `-o` | FLOAT | Minimum high/low base-quality ratio (1.5). |
+| `-X` | INT | Bases inspected past an indel for mismatches (3). |
+| `-m` | INT | Skip a read whose mismatches (excluding indel length) exceed this (8). |
+| `-I` | INT | Indel-size / large-indel breakpoint search window (50). |
+| `-V` | FLOAT | Somatic low-frequency threshold for LOH/somatic gating (0.05, paired mode). |
+| `-mfreq` / `-nmfreq` | FLOAT | MSI monomer / non-monomer variant-frequency thresholds (0.25 / 0.1). |
+| `-k` | 0\|1 | Local realignment (on). |
+| `-t` | | Remove duplicate reads before calling. |
+| `--vcf` | | Write VCF directly (in-C++ strand-bias Fisher test + var2vcf). Default output is VarDict simple-mode TSV. |
+| `-th` / `--threads` | INT | Region-parallel worker threads (1). Output is byte-identical regardless of thread count. |
+
+## Getting help
+
+Questions, bug reports and feature requests are welcome on the
+[GitHub issue tracker](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/issues).
 
 ## Whole-exome benchmark
 

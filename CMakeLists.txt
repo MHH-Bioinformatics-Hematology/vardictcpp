@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(vardictcpp VERSION 1 LANGUAGES CXX)
+project(vardictcpp VERSION 3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,3 +65,7 @@ target_compile_definitions(vardictcpp PRIVATE VARDICTCPP_VERSION="${PROJECT_VERS
 get_filename_component(HTS_LIBDIR ${HTS_LIBRARY} DIRECTORY)
 set_target_properties(vardictcpp PROPERTIES
   BUILD_RPATH ${HTS_LIBDIR} INSTALL_RPATH ${HTS_LIBDIR})
+
+# Install target (used by `cmake --install`, e.g. the Bioconda build.sh).
+include(GNUInstallDirs)
+install(TARGETS vardictcpp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
