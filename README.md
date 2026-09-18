@@ -1,11 +1,14 @@
 # vardictcpp
 
 [![CI](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/actions/workflows/ci.yml/badge.svg)](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-vardictcpp.readthedocs.io-blue)](https://vardictcpp.readthedocs.io/)
 
 A C++17 port of [VarDict](https://github.com/AstraZeneca-NGS/VarDictJava) (AstraZeneca-NGS),
 built with htslib. Goal: a memory-lean, fast native implementation of the VarDict amplicon/somatic
 variant caller. This repository is the **staged port**; see *Parity status* for what is implemented
 today.
+
+**Documentation:** [vardictcpp.readthedocs.io](https://vardictcpp.readthedocs.io/) | **Developer group:** [MHH Bioinformatics and Hematology](https://mhh-bioinformatics-hematology.github.io/)
 
 ## Why
 
@@ -221,14 +224,12 @@ removes them). ExtraAF is derived from `extracnt`.
 **Validation vs VarDictJava 1.8.3** (1 Mb / 300× synthetic, default simple mode):
 - **Variant set: exact — 0 false-positives, 0 false-negatives.**
 - **Full-row byte-identical: 100 %** — every row matches VarDictJava across all 36 columns,
-  confirmed against a fresh VarDictJava 1.8.3 run on the same input.
+  confirmed against a fresh VarDictJava 1.8.3 run on the same input. This holds on the five real
+  whole-exome samples as well.
 
-An earlier development snapshot reached only 98.3 % full-row identity, the residual rows differing in
-coverage-accounting columns at multi-variant / MNP-adjacent loci. Those were closed by the coupled
-**CigarModifier + adjSNV** pair (read-end mismatch → soft-clip → merged back into the adjacent SNV),
-verified read-by-read against instrumented VarDict, plus the exact genotype rule (genotype1 = reference
-allele when its frequency ≥ `-f`, else the variant). The current output is byte-identical on this
-synthetic set and on the five real whole-exome samples.
+Full parity relies on the coupled **CigarModifier + adjSNV** pair (read-end mismatch → soft-clip →
+merged back into the adjacent SNV), verified read-by-read against instrumented VarDict, plus the exact
+genotype rule (genotype1 = reference allele when its frequency ≥ `-f`, else the variant).
 
 Also ports the **small-indel realignment engine** (`realigner.cpp`): `realignins`/`realigndel` with
 `findMM3`/`findMM5`, `findconseq`, `ismatch`, `joinRef`, `adjCnt`/`adjRefCnt`/`adjRefFactor`, and
