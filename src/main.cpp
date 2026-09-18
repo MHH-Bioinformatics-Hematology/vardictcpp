@@ -23,7 +23,7 @@
 #include "simd.hpp"
 
 #ifndef VARDICTCPP_VERSION
-#define VARDICTCPP_VERSION "2"
+#define VARDICTCPP_VERSION "3"
 #endif
 #include "cigar_parser.hpp"
 #include "realigner.hpp"
