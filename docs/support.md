@@ -9,6 +9,12 @@ Questions, bug reports, and feature requests are welcome on the GitHub issue tra
 When reporting a problem, please include the vardictcpp version (`vardictcpp --version`), the exact
 command line, and the reference and platform (operating system and CPU architecture).
 
+## Project links
+
+- Developer group: [MHH Bioinformatics and Hematology](https://mhh-bioinformatics-hematology.github.io/)
+- vardictcpp source: [github.com/MHH-Bioinformatics-Hematology/vardictcpp](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp)
+- Galaxy wrapper: [github.com/MHH-Bioinformatics-Hematology/galaxytools](https://github.com/MHH-Bioinformatics-Hematology/galaxytools)
+
 ## Contributing
 
 Contributions are welcome. Please open an issue to discuss a change before submitting a pull request,
