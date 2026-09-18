@@ -1,0 +1,50 @@
+site_name: vardictcpp
+site_description: A C++/htslib reimplementation of the VarDict variant caller
+site_author: Joachim Wolff
+site_url: https://vardictcpp.readthedocs.io/
+repo_url: https://github.com/MHH-Bioinformatics-Hematology/vardictcpp
+repo_name: MHH-Bioinformatics-Hematology/vardictcpp
+edit_uri: edit/main/docs/
+copyright: MIT License
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.integrate
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+# DIVERGENCES.md is an internal implementation note, not user documentation.
+exclude_docs: |
+  DIVERGENCES.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Usage: usage.md
+  - Options: options.md
+  - Benchmarks: benchmarks.md
+  - Support and citation: support.md
