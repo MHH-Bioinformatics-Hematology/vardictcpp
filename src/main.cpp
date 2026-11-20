@@ -23,7 +23,7 @@
 #include "simd.hpp"
 
 #ifndef VARDICTCPP_VERSION
-#define VARDICTCPP_VERSION "3"
+#define VARDICTCPP_VERSION "4"
 #endif
 #include "cigar_parser.hpp"
 #include "realigner.hpp"
@@ -45,7 +45,12 @@ static void usage() {
       "            -Z -d -e -n -s -v -y -3 -C -D -K -U -UN -j -J -DP -VS -adaptor -deldupvar -m\n"
       "  Somatic (paired) mode: -b 'tumor|normal' -N 'tumor|normal' (55-column output)\n"
       "  Amplicon (multiplex) mode: -a EDGE:FRACTION with an 8-column amplicon BED (38-column output)\n"
-      "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n");
+      "  --chunk INT  split regions longer than INT bp into windows (bounds memory)\n"
+      "  --vcf        write VCF directly (port of var2vcf_valid.pl / var2vcf_paired.pl)\n"
+      "  --noend      VCF: no END info tag (var2vcf -E)\n"
+      "  --vcfpass    VCF: only PASS variants (var2vcf -S)\n"
+      "  --vcfall     VCF: every variant at a position, not only the one with the highest allele\n"
+      "               frequency (var2vcf -A)\n");
 }
 
 // Parse an integer option/field value, rejecting anything that is not a whole number so a typo turns
@@ -123,7 +128,7 @@ static const std::map<std::string, bool> VARDICT_OPTS = {
     {"k",1},   // -k 0/1 : perform local realignment (VarDict takes a value)
     {"3",0},{"C",0},{"D",0},{"H",0},{"K",0},{"U",0},{"UN",0},{"chimeric",0},{"deldupvar",0},{"fisher",0},
     {"h",0},{"i",0},{"p",0},{"t",0},{"u",0},{"v",0},{"y",0},{"z",0},{"?",0},
-    {"vcf",0},{"noend",0},{"vcfpass",0},   // native VCF output (var2vcf port)
+    {"vcf",0},{"noend",0},{"vcfpass",0},{"vcfall",0},   // native VCF output (var2vcf port)
 };
 
 static int run(int argc, char** argv) {
@@ -202,6 +207,7 @@ static int run(int argc, char** argv) {
     c.colEnd = ival("E", "3");
     c.colGene = ival("g", "4");
     c.freq = dval("f", "0.01");
+    if (has("f")) c.freqText = val("f", "0.01");
     c.minReads = ival("r", "2");
     c.minBiasReads = ival("B", "2");
     c.goodq = dval("q", "22.5");
@@ -224,12 +230,13 @@ static int run(int argc, char** argv) {
     c.chimeric = has("chimeric");
     if (has("k")) c.performLocalRealignment = std::atoi(val("k", "1").c_str()) != 0;
     c.chunkSize = ival("chunk", "0");
-    // --vcf: native var2vcf output (implies --fisher for the SBF/ODDRATIO columns). --noend / --vcfpass
-    // mirror var2vcf's -E / -S (which cannot reuse -E/-S here, those are the BED end/start columns).
+    // --vcf: native var2vcf output (implies --fisher for the SBF/ODDRATIO columns). --noend / --vcfpass /
+    // --vcfall mirror var2vcf's -E / -S / -A (which cannot reuse -E/-S/-A here, VarDict uses those letters).
     c.vcf = has("vcf");
     if (c.vcf) c.fisher = true;
     c.vcfNoEnd = has("noend");
     c.vcfPassOnly = has("vcfpass");
+    c.vcfAll = has("vcfall");
     c.threads = std::max(1, ival(has("threads") ? "threads" : "th", "1"));
     if (has("H") || has("?")) { usage(); return 0; }
 

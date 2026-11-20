@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -31,6 +32,8 @@ static std::string perlNum(double v) {
 }
 // format a frequency threshold as Perl interpolates the passed -f value (e.g. 0.01 -> "0.01")
 static std::string freqStr(double f) { char b[32]; std::snprintf(b, sizeof(b), "%g", f); return b; }
+// label of the f filter: var2vcf writes "f" followed by its -f option text, so 0.00001 stays 0.00001
+static std::string freqLabel(const Config& cfg, double f) { return cfg.freqText.empty() ? freqStr(f) : cfg.freqText; }
 
 // var2vcf_valid.pl reorder(): numeric chromosomes ascending by numeric value, then X, Y, M/MT, then the
 // remaining (non-numeric) contigs in first-seen order.
@@ -100,8 +103,7 @@ static const char* HEADER_INFO_FILTER_FORMAT =
 "##INFO=<ID=DUPRATE,Number=1,Type=Float,Description=\"Duplication rate in fraction\">\n";
 
 // FILTER + FORMAT block, thresholds interpolated (defaults from var2vcf_valid.pl; f uses cfg.freq).
-static std::string headerFilters(double freq) {
-    std::string f = freqStr(freq);
+static std::string headerFilters(const std::string& f) {
     return
 "##FILTER=<ID=q22.5,Description=\"Mean Base Quality Below 22.5\">\n"
 "##FILTER=<ID=Q10,Description=\"Mean Mapping Quality Below 10\">\n"
@@ -157,7 +159,7 @@ std::string var2vcfSingle(const Config& cfg, const std::string& tsv) {
 
     std::string out = "##fileformat=VCFv4.2\n##source=VarDict_v1.8.2\n";
     out += HEADER_INFO_FILTER_FORMAT;
-    out += headerFilters(Freq);
+    out += headerFilters(freqLabel(cfg, Freq));
     out += "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample + "\n";
     if (hash.empty()) return out;
 
@@ -170,9 +172,14 @@ std::string var2vcfSingle(const Config& cfg, const std::string& tsv) {
             std::stable_sort(tmp.begin(), tmp.end(), [](const std::vector<std::string>& x, const std::vector<std::string>& y) {
                 return toD(get(y, 14)) < toD(get(x, 14));   // by AF descending
             });
-            // default (no -A): only the top variant at the position
-            const auto& a = tmp[0];
+            // default: only the top variant at the position; --vcfall (var2vcf -A): every variant in AF
+            // order, each written once (same chr, start, end, ref and alt), each through all filters
+            std::set<std::string> seen;
+            const size_t nVariants = cfg.vcfAll ? tmp.size() : 1;
+            for (size_t vi = 0; vi < nVariants; ++vi) {
+            const auto& a = tmp[vi];
             std::string ref = get(a, 5); if (ref.empty()) continue;
+            if (!seen.insert(a[2] + "-" + a[3] + "-" + get(a, 4) + "-" + ref + "-" + get(a, 6)).second) continue;
             long start = toL(a[3]), end = toL(get(a, 4));
             std::string alt = get(a, 6), type = get(a, 35); if (type.empty()) type = "REF";
             long dp = toL(get(a, 7)); std::string vd = get(a, 8);
@@ -200,7 +207,7 @@ std::string var2vcfSingle(const Config& cfg, const std::string& tsv) {
             std::vector<std::string> filters;
             if (dp < TotalDepth && !(hicnt * hiaf >= 0.5)) filters.push_back("d3");
             if (hicnt < VarDepth && !(hicnt * hiaf >= 0.5)) filters.push_back("v2");
-            if (af < Freq) filters.push_back("f" + freqStr(Freq));
+            if (af < Freq) filters.push_back("f" + freqLabel(cfg, Freq));
             if (toD(pmean) < Pmean) filters.push_back("p8");
             if (opt_P && pstd == 0 && !isamp && af < 0.35) filters.push_back("pSTD");
             if (qual < qmean) filters.push_back("q22.5");
@@ -271,14 +278,14 @@ std::string var2vcfSingle(const Config& cfg, const std::string& tsv) {
                  + std::to_string(rrev) + ":" + std::to_string(vfwd) + "," + std::to_string(vrev) + "\n";
 
             if (type == "SNV" && filter == "PASS") pvs = start;
+            }
         }
     }
     return out;
 }
 
 // header for the paired (somatic) VCF; thresholds are var2vcf_paired.pl defaults, f uses cfg.freq.
-static std::string pairedHeader(double freq) {
-    std::string f = freqStr(freq);
+static std::string pairedHeader(const std::string& f) {
     return
 "##fileformat=VCFv4.2\n##source=VarDict_v1.8.2\n"
 "##INFO=<ID=SAMPLE,Number=1,Type=String,Description=\"Sample name (with whitespace translated to underscores)\">\n"
@@ -366,7 +373,7 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
     }
     std::string sampleNW = sample; for (char& c : sampleNW) if (isspace((unsigned char)c)) c = '_';
 
-    std::string out = pairedHeader(FREQ);
+    std::string out = pairedHeader(freqLabel(cfg, FREQ));
     out += "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample + "\t" + samplem + "\n";
     if (hash.empty()) return out;
 
@@ -377,8 +384,13 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
             std::stable_sort(tmp.begin(), tmp.end(), [](const std::vector<std::string>& x, const std::vector<std::string>& y) {
                 return toD(get(y, 14)) < toD(get(x, 14));   // by tumor AF descending
             });
-            const auto& a = tmp[0];
+            // default: only the top variant; --vcfall (var2vcf_paired -A): every variant, each once
+            std::set<std::string> seen;
+            const size_t nVariants = cfg.vcfAll ? tmp.size() : 1;
+            for (size_t vi = 0; vi < nVariants; ++vi) {
+            const auto& a = tmp[vi];
             std::string ref = get(a, 5); if (ref.empty()) continue;
+            if (!seen.insert(a[2] + "-" + a[3] + "-" + get(a, 4) + "-" + ref + "-" + get(a, 6)).second) continue;
             long start = toL(a[3]), end = toL(get(a, 4));
             std::string alt = get(a, 6);
             long dp1 = toL(get(a, 7)); double af1 = toD(get(a, 14));
@@ -408,7 +420,7 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
             if (vd1 < VarDepth && !(strong && pv < 0.15 && af1 * vd1 >= 0.5)) F.push_back("v3");
             if (dp2 < MinDepth) F2.push_back("d5");
             if (vd2 < VarDepth) F2.push_back("v3");
-            if (af1 < FREQ) F.push_back("f" + freqStr(FREQ));
+            if (af1 < FREQ) F.push_back("f" + freqLabel(cfg, FREQ));
             if (pmean1 < PMEAN) F.push_back("p8");
             if (pstd1 == 0 && vd1 < MinDepth) F.push_back("pSTD");
             if (qual1 < QMEAN) F.push_back("q22.5");
@@ -417,7 +429,7 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
             if (sn1 < SN) F.push_back("SN1.5");
             if (nm1 >= opt_m) F.push_back("NM5.25");
             if (bias1 == "2;1" && sbf1 < 0.01 && (oddratio1N > 5 || oddratio1N == 0) && end - start < 100) F.push_back("Bias");
-            if (af2 < FREQ) F2.push_back("f" + freqStr(FREQ));
+            if (af2 < FREQ) F2.push_back("f" + freqLabel(cfg, FREQ));
             if (pmean2 < PMEAN) F2.push_back("p8");
             if (pstd2 == 0 && vd2 < MinDepth) F2.push_back("pSTD");
             if (qual2 < QMEAN) F2.push_back("q22.5");
@@ -462,6 +474,7 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
                  + ":" + std::to_string(rfwd2) + "," + std::to_string(rrev2) + ":" + std::to_string(rd2) + "," + vd2S + ":" + af2S
                  + ":" + b2 + ":" + get(a, 36) + ":" + get(a, 37) + ":" + get(a, 38) + ":" + get(a, 39) + ":" + get(a, 45)
                  + ":" + oddratio2 + ":" + mq2 + ":" + get(a, 41) + ":" + get(a, 42) + ":" + get(a, 43) + ":" + get(a, 44) + "\n";
+            }
         }
     }
     return out;

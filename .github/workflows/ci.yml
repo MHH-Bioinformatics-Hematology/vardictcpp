@@ -29,7 +29,7 @@ jobs:
           - { os: ubuntu-latest,    arch: x86_64, cc: clang, cxx: clang++ }
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: gcc,   cxx: g++ }
           - { os: ubuntu-24.04-arm, arch: arm64,  cc: clang, cxx: clang++ }
-          - { os: macos-14,         arch: arm64,  cc: clang, cxx: clang++ }   # Apple Silicon
+          - { os: macos-15,         arch: arm64,  cc: clang, cxx: clang++ }   # Apple Silicon
     steps:
       - uses: actions/checkout@v5
 
