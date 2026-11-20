@@ -14,6 +14,14 @@ endif()
 # forbids -march=native) requires. Any CFLAGS the build system injects (CMAKE_CXX_FLAGS) are preserved.
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
 
+# Some distribution compilers default to a newer x86-64 level (e.g. x86-64-v3 with AVX2), which would
+# bake AVX into the "portable" binary. Name the baseline explicitly on x86-64 unless the caller (or
+# VARDICTCPP_NATIVE below) sets an -march of its own.
+if(NOT VARDICTCPP_NATIVE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"
+   AND NOT CMAKE_CXX_FLAGS MATCHES "-march=")
+  string(APPEND CMAKE_CXX_FLAGS_RELEASE " -march=x86-64 -mtune=generic")
+endif()
+
 # Opt in to host-specific tuning for a locally built, non-distributed binary. Uses -march=native where
 # the compiler supports it (x86-64 and GCC on ARM) and falls back to -mcpu=native (Apple/clang on ARM);
 # each flag is probed first so an unsupported toolchain simply keeps the portable flags.
