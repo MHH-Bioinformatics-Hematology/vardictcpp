@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -170,9 +171,14 @@ std::string var2vcfSingle(const Config& cfg, const std::string& tsv) {
             std::stable_sort(tmp.begin(), tmp.end(), [](const std::vector<std::string>& x, const std::vector<std::string>& y) {
                 return toD(get(y, 14)) < toD(get(x, 14));   // by AF descending
             });
-            // default (no -A): only the top variant at the position
-            const auto& a = tmp[0];
+            // default: only the top variant at the position; --vcfall (var2vcf -A): every variant in AF
+            // order, each written once (same chr, start, end, ref and alt), each through all filters
+            std::set<std::string> seen;
+            const size_t nVariants = cfg.vcfAll ? tmp.size() : 1;
+            for (size_t vi = 0; vi < nVariants; ++vi) {
+            const auto& a = tmp[vi];
             std::string ref = get(a, 5); if (ref.empty()) continue;
+            if (!seen.insert(a[2] + "-" + a[3] + "-" + get(a, 4) + "-" + ref + "-" + get(a, 6)).second) continue;
             long start = toL(a[3]), end = toL(get(a, 4));
             std::string alt = get(a, 6), type = get(a, 35); if (type.empty()) type = "REF";
             long dp = toL(get(a, 7)); std::string vd = get(a, 8);
@@ -271,6 +277,7 @@ std::string var2vcfSingle(const Config& cfg, const std::string& tsv) {
                  + std::to_string(rrev) + ":" + std::to_string(vfwd) + "," + std::to_string(vrev) + "\n";
 
             if (type == "SNV" && filter == "PASS") pvs = start;
+            }
         }
     }
     return out;
@@ -377,8 +384,13 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
             std::stable_sort(tmp.begin(), tmp.end(), [](const std::vector<std::string>& x, const std::vector<std::string>& y) {
                 return toD(get(y, 14)) < toD(get(x, 14));   // by tumor AF descending
             });
-            const auto& a = tmp[0];
+            // default: only the top variant; --vcfall (var2vcf_paired -A): every variant, each once
+            std::set<std::string> seen;
+            const size_t nVariants = cfg.vcfAll ? tmp.size() : 1;
+            for (size_t vi = 0; vi < nVariants; ++vi) {
+            const auto& a = tmp[vi];
             std::string ref = get(a, 5); if (ref.empty()) continue;
+            if (!seen.insert(a[2] + "-" + a[3] + "-" + get(a, 4) + "-" + ref + "-" + get(a, 6)).second) continue;
             long start = toL(a[3]), end = toL(get(a, 4));
             std::string alt = get(a, 6);
             long dp1 = toL(get(a, 7)); double af1 = toD(get(a, 14));
@@ -462,6 +474,7 @@ std::string var2vcfPaired(const Config& cfg, const std::string& tsv) {
                  + ":" + std::to_string(rfwd2) + "," + std::to_string(rrev2) + ":" + std::to_string(rd2) + "," + vd2S + ":" + af2S
                  + ":" + b2 + ":" + get(a, 36) + ":" + get(a, 37) + ":" + get(a, 38) + ":" + get(a, 39) + ":" + get(a, 45)
                  + ":" + oddratio2 + ":" + mq2 + ":" + get(a, 41) + ":" + get(a, 42) + ":" + get(a, 43) + ":" + get(a, 44) + "\n";
+            }
         }
     }
     return out;
