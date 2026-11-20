@@ -66,6 +66,7 @@ struct Config {
     bool vcfNoEnd = false;    // -E : do not print the END info tag
     bool vcfPassOnly = false; // -S : drop non-PASS variants
     bool vcfAll = false;      // -A : every variant at a position, not only the one with the highest AF
+    std::string freqText;     // -f exactly as given: var2vcf writes the f filter label from the option text
     // Amplicon (multiplex) mode: -a EDGE:FRACTION (GlobalReadOnlyScope.ampliconBasedCalling). A read is
     // assigned to an amplicon only if its aligned edges are within EDGE bp of the amplicon boundaries
     // and its overlap fraction with the amplicon exceeds FRACTION (CigarParser.parseCigarWithAmpCase).

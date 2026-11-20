@@ -207,6 +207,7 @@ static int run(int argc, char** argv) {
     c.colEnd = ival("E", "3");
     c.colGene = ival("g", "4");
     c.freq = dval("f", "0.01");
+    if (has("f")) c.freqText = val("f", "0.01");
     c.minReads = ival("r", "2");
     c.minBiasReads = ival("B", "2");
     c.goodq = dval("q", "22.5");
